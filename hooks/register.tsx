@@ -39,8 +39,8 @@ const DESCRIPTION = `Shows the person a file right in the chat, no browser neede
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
 
 const WORDS = {
-  en: { noImagesTmux: 'Pictures are off in this session: tmux did not pass them through when Claude Code started. Restart Claude Code in this window and they show. For every window: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'This terminal cannot draw pictures (Ghostty, kitty, WezTerm and iTerm2 can). Open shows the file.', page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
-  de: { noImagesTmux: 'Bilder sind in dieser Sitzung aus: tmux hat sie beim Start von Claude Code nicht durchgelassen. Claude Code in diesem Fenster neu starten, dann sind sie da. Für alle Fenster: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'Dieses Terminal kann keine Bilder zeigen (Ghostty, kitty, WezTerm und iTerm2 können es). Öffnen zeigt die Datei.', page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
+  en: { noImagesTmux: 'Pictures are off in this session: tmux did not pass them through when Claude Code started. Restart Claude Code in this window and they show. For every window: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'This terminal cannot draw pictures (Ghostty, kitty, WezTerm and iTerm2 can). Open shows the file.', page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', firstPages: 'first {n} to page through', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
+  de: { noImagesTmux: 'Bilder sind in dieser Sitzung aus: tmux hat sie beim Start von Claude Code nicht durchgelassen. Claude Code in diesem Fenster neu starten, dann sind sie da. Für alle Fenster: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'Dieses Terminal kann keine Bilder zeigen (Ghostty, kitty, WezTerm und iTerm2 können es). Öffnen zeigt die Datei.', page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', firstPages: 'die ersten {n} zum Blättern', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
 }
 type Words = (typeof WORDS)['en']
 
@@ -306,6 +306,18 @@ async function readyTmux($: any): Promise<void> {
   ]) await $.process.run(argv, { env, timeoutMs: 5_000 }).catch(() => undefined)
 }
 
+/** `/show-me` arguments: the file and an optional before=…, each bare, in quotes, or with backslash-escaped spaces
+ *  (what dragging a file into the terminal types). */
+function pathsOf(args: string): { file: string; before?: string } {
+  const clean = (s: string) => s.trim().replace(/^(["'])(.*)\1$/, '$2').replace(/\\ /g, ' ')
+  let before: string | undefined
+  const rest = args.replace(/\bbefore=("[^"]*"|'[^']*'|(?:\\ |\S)+)/, (_, path: string) => {
+    before = clean(path)
+    return ''
+  })
+  return { file: clean(rest), ...(before ? { before } : {}) }
+}
+
 function expandHome(path: string, home: string): string {
   return path.trim().replace(/^~(?=\/|$)/, home)
 }
@@ -431,7 +443,8 @@ async function drawView($: any, e: any, id: string, v: View) {
   const launch = (argv: string[]) => () => void runOn($, argv, 10_000)
   const openArgv = mac ? ['open', v.source] : ['xdg-open', v.source]
   const modeName = at.mode === 'before' ? words.before : at.mode === 'both' ? `${words.before} | ${words.after}` : words.after
-  const heading = `${v.title}${list.length > 1 ? ` · ${page.name}${v.kind === 'pdf' ? ` ${words.of} ${v.total}` : ''}` : ''}${v.before ? ` · ${modeName}` : ''}`
+  const capped = v.kind === 'pdf' && v.total > list.length ? ` (${words.firstPages.replace('{n}', String(list.length))})` : ''
+  const heading = `${v.title}${list.length > 1 ? ` · ${page.name}${v.kind === 'pdf' ? ` ${words.of} ${v.total}${capped}` : ''}` : ''}${v.before ? ` · ${modeName}` : ''}`
 
   // One button per page (a window of them for long files): each number sits in its own place, so fast clicks on
   // different pages never read as a double-click the way repeated clicks on ▶ do.
@@ -504,6 +517,7 @@ async function drawView($: any, e: any, id: string, v: View) {
       )
       : await picture(shownPage, width, 'picture')
     return (
+      // Buttons below the picture: the newest output sits at the prompt, so they stay in view however tall the picture is.
       <Box flexDirection="column">
         <Text bold>{heading}</Text>
         {pictures}
@@ -700,8 +714,7 @@ export const register: Register = on => {
       await $.store.set('buttons', toggle[1]!.toLowerCase())
       return { text: toggle[1]!.toLowerCase() === 'off' ? words.buttonsOff : words.buttonsOn }
     }
-    const before = (/\bbefore=(\S+)/.exec(args) ?? [])[1]
-    const file = args.replace(/\bbefore=\S+/, '').trim()
+    const { file, before } = pathsOf(args)
     const id = `cmd-${Date.now().toString(36)}`
     try {
       const sentence = await createView($, id, { file, ...(before ? { before } : {}) })

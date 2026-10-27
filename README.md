@@ -61,6 +61,7 @@ Or type it yourself:
 
 ```
 /show-me ~/Desktop/offer.pdf
+/show-me "~/Desktop/My Offer (final).pdf"
 /show-me ~/site/new.png before=~/site/old.png
 /show-me https://example.com
 ```
