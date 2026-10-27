@@ -11,12 +11,13 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Kind, Mode, Page, Position, View } from '../types'
+import type { Kind, Mode, Page, Position, Screen, View } from '../types'
 
 const TOOL = 'mcp__show-me__show'
 const MARK = 'show-me:'
 const views = atom({ plugin: 'show-me', key: 'views' } as const, {}, { shape: 'views-1' })
 const positions = atom({ plugin: 'show-me', key: 'positions' } as const, {}, { shape: 'positions-1' })
+const screen = atom({ plugin: 'show-me', key: 'screen' } as const, {} as Screen, { shape: 'screen-1' })
 
 const IMAGE = /\.(png|jpe?g|webp|gif|heic|heif|tiff?|bmp|avif)$/i
 const VIDEO = /\.(mp4|mov|m4v|webm|mkv|avi)$/i
@@ -36,8 +37,8 @@ const DESCRIPTION = `Shows the person a file right in the chat, no browser neede
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
 
 const WORDS = {
-  en: { page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
-  de: { page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
+  en: { noImagesTmux: 'Pictures are off in this session: tmux did not pass them through when Claude Code started. Restart Claude Code in this window and they show. For every window: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'This terminal cannot draw pictures (Ghostty, kitty, WezTerm and iTerm2 can). Open shows the file.', page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
+  de: { noImagesTmux: 'Bilder sind in dieser Sitzung aus: tmux hat sie beim Start von Claude Code nicht durchgelassen. Claude Code in diesem Fenster neu starten, dann sind sie da. Für alle Fenster: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'Dieses Terminal kann keine Bilder zeigen (Ghostty, kitty, WezTerm und iTerm2 können es). Öffnen zeigt die Datei.', page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
 }
 type Words = (typeof WORDS)['en']
 
@@ -261,6 +262,21 @@ async function prepareAny($: any, source: string): Promise<{ kind: Kind; pages: 
   return { kind, pages, total: pages.length }
 }
 
+/** Claude Code decides when the session starts whether it draws pictures: inside tmux only when allow-passthrough
+ *  and focus-events are on at that moment, in Apple's Terminal never. Checked once, before readyTmux turns them on,
+ *  so a viewer can say why it shows no picture instead of a grey line. CLAUDE_CODE_FORCE_TERMINAL_IMAGES overrides. */
+async function checkScreen($: any): Promise<Screen> {
+  if ((await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1') return {}
+  const tmux = await $.env.get('TMUX')
+  if (!tmux) return (await $.env.get('TERM_PROGRAM')) === 'Apple_Terminal' ? { imagesOff: 'terminal' } : {}
+  const pane = (await $.env.get('TMUX_PANE')) ?? ''
+  const env = { ...(await hostOf($)).env, TMUX: tmux }
+  const ask = async (argv: string[]) => (await $.process.run(argv, { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))).stdout.trim()
+  const pass = await ask(['tmux', 'show', '-Apv', ...(pane ? ['-t', pane] : []), 'allow-passthrough'])
+  const focus = await ask(['tmux', 'show', '-gv', 'focus-events'])
+  return (pass === 'on' || pass === 'all') && focus === 'on' ? {} : { imagesOff: 'tmux' }
+}
+
 /** Inside tmux, pictures need allow-passthrough on this pane and focus-events on. */
 async function readyTmux($: any): Promise<void> {
   const tmux = await $.env.get('TMUX')
@@ -391,6 +407,21 @@ async function drawView($: any, e: any, id: string, v: View) {
 
   if (e.surface === 'terminal') {
     const { Box, Text, Button, Image } = $.ui.resolve(e)
+    const { imagesOff } = await read($, screen)
+    if (imagesOff) {
+      // No picture can be drawn in this session: say why and how to get it, keep Open as the way to see it now.
+      return (
+        <Box flexDirection="column">
+          <Text bold>{heading}</Text>
+          <Text dimColor>{imagesOff === 'tmux' ? words.noImagesTmux : words.noImagesTerminal}</Text>
+          <Box flexDirection="row" gap={1}>
+            <Button key="open" variant="primary" onPress={launch(openArgv)}>{words.open}</Button>
+            {mac && !URL_RE.test(v.source) && <Button key="reveal" onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>}
+          </Box>
+          {v.note && <Text dimColor>{v.note}</Text>}
+        </Box>
+      )
+    }
     const width = Math.max(20, (e.viewport?.columns ?? 100) - 4)
     const height = Math.max(8, Math.min(48, (e.viewport?.rows ?? 50) - 8))
     const picture = async (p: Page, maxColumns: number, key: string) => {
@@ -504,7 +535,12 @@ async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf) {
 }
 
 async function readPicture($: any, e: any, id: string, out: ReadImage) {
-  const { Image } = $.ui.resolve(e)
+  const { Image, Text } = $.ui.resolve(e)
+  const { imagesOff } = await read($, screen)
+  if (imagesOff) {
+    const { words } = await hostOf($)
+    return <Text dimColor>{imagesOff === 'tmux' ? words.noImagesTmux : words.noImagesTerminal}</Text>
+  }
   const inTmux = Boolean(await $.env.get('TMUX'))
   const d = out.file.dimensions ?? {}
   let width = d.displayWidth ?? d.originalWidth ?? 1200
@@ -563,6 +599,10 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    // Before readyTmux: what counts is how tmux stood when this session started
+    const found = await checkScreen($).catch(() => ({}) as Screen)
+    await update($, screen, () => found)
+    await readyTmux($).catch(() => undefined)
     await $.tool.register({
       name: 'show',
       description: DESCRIPTION,

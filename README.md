@@ -91,7 +91,14 @@ Following a session from the Claude app (Remote Control) or a background session
 
 ### tmux
 
-Inside tmux, pictures need `allow-passthrough` (for the pane) and `focus-events`. The plugin turns both on for the running tmux session the first time it shows something; your tmux config file is not changed. If pictures still show as text, start Claude Code with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`. If the picture area stays black, turn passthrough on for every window: add `set -g allow-passthrough on` to `~/.tmux.conf`.
+Inside tmux, pictures need `allow-passthrough` and `focus-events`, and Claude Code checks them **once, when the session starts**: a session started while they were off draws no pictures at all, whatever is switched on later.
+
+- Best: put both in `~/.tmux.conf`, then every new session shows pictures:
+  ```
+  set -g allow-passthrough on
+  set -g focus-events on
+  ```
+- Without that, the plugin turns both on for its own pane when a session starts (your config file is not changed). A session that started without them says so in the viewer, with an **Open** button; restart Claude Code in that window (`/exit`, then `claude --resume`) and the pictures show.
 
 ## Privacy
 

@@ -20,11 +20,15 @@ export type Mode = 'after' | 'before' | 'both'
 /** Where the person is in a viewer: page, before/after mode, and whether the picture is folded away. */
 export type Position = { page: number; mode: Mode; hidden?: boolean }
 
+/** Checked once when the session starts: whether this session's terminal draws pictures at all, and if not, why. */
+export type Screen = { imagesOff?: 'tmux' | 'terminal' }
+
 declare module 'claude-code' {
   interface PluginState {
     'show-me': {
       views: Shaped<Record<string, View>>
       positions: Shaped<Record<string, Position>>
+      screen: Shaped<Screen>
       /** Whether a Read row's picture is unfolded in the terminal, per tool_use_id. */
       open: StateFamily<boolean>
     }

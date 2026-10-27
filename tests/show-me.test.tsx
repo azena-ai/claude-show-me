@@ -142,3 +142,22 @@ test('a text Read is left to the engine', async ($, on) => {
   expect(await ui.find({ type: 'Button', key: 'show-me' })).toBeFalsy()
   await ui.unmount()
 })
+
+test('where the session draws no pictures (tmux without passthrough at start), the viewer says why and offers Open', async ($, on) => {
+  stubHost(on)
+  on('state.get', (_, e) => {
+    const key = (e as { key: string }).key
+    if (key === 'views') return { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+    if (key === 'screen') return { value: { value: { shape: 'screen-1', value: { imagesOff: 'tmux' } }, version: 1 } }
+    return { value: { value: { shape: 'positions-1', value: {} }, version: 1 } }
+  })
+  const ui = await $.ui.mount(ROW('terminal'))
+  expect(await ui.find({ type: 'Image' })).toBeFalsy()
+  expect((await ui.find({ type: 'Text', text: /allow-passthrough/ }))?.text).toContain('Restart Claude Code')
+  expect(await ui.find({ type: 'Button', key: 'open' })).toBeTruthy()
+  await ui.unmount()
+  // other surfaces are not affected: the app draws its own picture
+  const app = await $.ui.mount(ROW('mobile'))
+  expect(await app.find({ type: 'Svg' })).toBeTruthy()
+  await app.unmount()
+})
