@@ -42,12 +42,14 @@ Besides the button, Claude gets a tool, `show`, and you get a command, `/show-me
 | You give it | You see in the chat |
 |---|---|
 | an image (png, jpg, webp, gif, heic, tiff …) | the image |
-| a PDF | every page (up to 60), page through with ◀ ▶ |
+| a PDF | every page (up to 60): page through with ◀ ▶ or jump with the page numbers below the picture |
 | a video (mp4, mov, webm …) | a contact sheet of 6 frames, then each frame with its timestamp |
 | a web page (https) or a local `.html` file | screenshots at desktop (1440×900) and phone (390×844) size |
 | `before=<old file>` | Before / After / Side by side, one click to switch |
 
 Every viewer has **Hide** (folds the picture away, **Show** brings it back), **Open** (in the default app) and, on macOS, **Show in folder**.
+
+**Paging fast:** click the page numbers under the picture (`1 2 3 … 12`). Claude Code reads two quick clicks on the same spot, such as ▶ twice, as a double-click and drops the second, so the numbers are the quick way through a file. The page number moves at once; the picture follows as soon as you stop clicking. Outside tmux the terminal reads the picture file itself, and large PDF pages are reduced to 256 colours, so a page turn sends little.
 
 Ask for it in plain words:
 

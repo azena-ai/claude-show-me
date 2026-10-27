@@ -28,6 +28,8 @@ const CHROMES = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 const MAX_PDF_PAGES = 60
 const PDF_EDGE = 1200
 const BYTES_KEPT = 48 // pictures held in memory for instant paging
+const SETTLE_MS = 280 // paging fast: the picture follows once the clicks pause
+const PALETTE_ABOVE = 200_000 // PDF pages larger than this go to 256 colours (about half the bytes)
 const MAX_VIEWS = 60
 const PNG_LIMIT = 1_900_000 // an Image takes at most 2 MiB
 const SVG_LIMIT = 120_000 // an Svg source takes at most 131,072 characters
@@ -43,7 +45,7 @@ const WORDS = {
 type Words = (typeof WORDS)['en']
 
 type Run = { code: number; out: string; err: string }
-type Host = { mac: boolean; uid: number; words: Words; env: Record<string, string> }
+type Host = { mac: boolean; uid: number; tmux: boolean; words: Words; env: Record<string, string> }
 
 // ---------------------------------------------------------------- the host
 
@@ -63,7 +65,8 @@ async function hostOf($: any): Promise<Host> {
     const r = await $.process.run(['defaults', 'read', '-g', 'AppleLocale'], { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))
     lang = r.stdout
   }
-  hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
+  const tmux = Boolean(await $.env.get('TMUX'))
+  hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, tmux, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
   return hostFacts
 }
 
@@ -196,6 +199,17 @@ async function preparePdf($: any, source: string): Promise<{ pages: Page[]; tota
     await runOn($, ['pdftoppm', '-jpeg', '-jpegopt', 'quality=55', '-scale-to', '560', '-f', '1', '-l', String(last), source, `${dir}/v`], 240_000)
   }
   const files = ((await $.fs.list(dir)) as any[]).map(f => f.name).filter(n => /^s-\d+\.png$/.test(n)).sort()
+  if (!listed.includes('palette.done')) {
+    for (const file of files) {
+      const path = `${dir}/${file}`
+      if ((await sizeOnDisk($, path)) <= PALETTE_ABOVE) continue
+      const smaller = `${dir}/pal-${file}`
+      const r = await runOn($, ['ffmpeg', '-y', '-v', 'error', '-i', path, '-vf', 'split[a][b];[a]palettegen=max_colors=256:stats_mode=full[p];[b][p]paletteuse=dither=sierra2_4a', smaller], 60_000)
+      if (r.code === 127) break // no ffmpeg: keep the pages as they are
+      if (r.code === 0 && (await sizeOnDisk($, smaller)) > 0 && (await sizeOnDisk($, smaller)) < (await sizeOnDisk($, path))) await runOn($, ['mv', '-f', smaller, path])
+    }
+    await $.fs.write(`${dir}/palette.done`, '')
+  }
   const pages: Page[] = []
   for (const [i, file] of files.entries()) {
     const nr = /s-(\d+)\.png$/.exec(file)![1]
@@ -344,6 +358,8 @@ function fit(width: number, height: number, maxColumns: number, maxRows: number)
 
 // Pictures already read, by path: a page turn draws from memory instead of reading the file again.
 const pictureBytes = new Map<string, string>()
+// Per viewer: a burst of page turns in progress, and the latest turn; the picture is drawn when the burst pauses.
+const pagingBursts = new Map<string, number>()
 
 async function bytesOf($: any, path: string): Promise<string> {
   const kept = pictureBytes.get(path)
@@ -371,16 +387,41 @@ async function drawView($: any, e: any, id: string, v: View) {
   const at: Position = (await read($, positions))[id] ?? { page: 0, mode: 'after' }
   const list = at.mode === 'before' && v.before ? v.before : v.pages
   const nr = Math.min(Math.max(0, at.page), list.length - 1)
+  // The picture shows `shown` while a burst of clicks is still running, so the page number moves at once and
+  // no page in between is sent to the terminal; the burst's last page follows when the clicks pause.
+  const shownNr = Math.min(Math.max(0, at.shown ?? at.page), list.length - 1)
   const page = list[nr]!
-  const afterPage = v.pages[Math.min(nr, v.pages.length - 1)]!
-  const beside = at.mode === 'both' && v.before ? v.before[Math.min(nr, v.before.length - 1)]! : undefined
+  const shownPage = list[shownNr]!
+  const afterPage = v.pages[Math.min(shownNr, v.pages.length - 1)]!
+  const beside = at.mode === 'both' && v.before ? v.before[Math.min(shownNr, v.before.length - 1)]! : undefined
   const setMode = (mode: Mode) => () =>
     update($, positions, all => ({ ...(all ?? {}), [id]: { ...(all?.[id] ?? at), mode } }))
-  const turn = (step: number) => () =>
-    update($, positions, all => {
+  const settle = (burst: number) => () => {
+    if (pagingBursts.get(id) !== burst) return // a newer click restarted the wait
+    pagingBursts.delete(id)
+    void update($, positions, all => {
       const now = all?.[id] ?? at
-      return { ...(all ?? {}), [id]: { ...now, page: (now.page + step + list.length) % list.length } }
+      return { ...(all ?? {}), [id]: { ...now, shown: now.page } }
     })
+  }
+  const go = (target: (now: Position) => number) => async () => {
+    const inBurst = pagingBursts.has(id)
+    const burst = (pagingBursts.get(id) ?? 0) + 1
+    pagingBursts.set(id, burst)
+    await update($, positions, all => {
+      const now = all?.[id] ?? at
+      const next = target(now)
+      // the first click of a burst shows its page right away; later clicks only move the number
+      return { ...(all ?? {}), [id]: { ...now, page: next, shown: inBurst ? (now.shown ?? now.page) : next } }
+    })
+    try {
+      $.clock.after(SETTLE_MS, settle(burst))
+    } catch {
+      settle(burst)()
+    }
+  }
+  const turn = (step: number) => go(now => (now.page + step + list.length) % list.length)
+  const jump = (to: number) => go(() => to)
   const fold = () =>
     update($, positions, all => {
       const now = all?.[id] ?? at
@@ -391,6 +432,22 @@ async function drawView($: any, e: any, id: string, v: View) {
   const openArgv = mac ? ['open', v.source] : ['xdg-open', v.source]
   const modeName = at.mode === 'before' ? words.before : at.mode === 'both' ? `${words.before} | ${words.after}` : words.after
   const heading = `${v.title}${list.length > 1 ? ` · ${page.name}${v.kind === 'pdf' ? ` ${words.of} ${v.total}` : ''}` : ''}${v.before ? ` · ${modeName}` : ''}`
+
+  // One button per page (a window of them for long files): each number sits in its own place, so fast clicks on
+  // different pages never read as a double-click the way repeated clicks on ▶ do.
+  const pageStrip = (Button: any, Text: any) => {
+    if (hidden || list.length < 2) return null
+    const n = list.length
+    const wanted = n <= 15 ? [...Array(n).keys()] : [0, ...[-3, -2, -1, 0, 1, 2, 3].map(d => nr + d).filter(i => i > 0 && i < n - 1), n - 1]
+    const parts: any[] = []
+    wanted.forEach((i, k) => {
+      if (k > 0 && i - wanted[k - 1]! > 1) parts.push(<Text dimColor>…</Text>)
+      parts.push(i === nr
+        ? <Text bold inverse>{` ${i + 1} `}</Text>
+        : <Button key={`page-${i + 1}`} plain onPress={jump(i)}>{` ${i + 1} `}</Button>)
+    })
+    return parts
+  }
 
   // Folded away, the row keeps its heading and the buttons that need no picture: Show, Open, Show in folder.
   const controls = (Button: any, Text: any, withOpen: boolean) => [
@@ -424,12 +481,14 @@ async function drawView($: any, e: any, id: string, v: View) {
     }
     const width = Math.max(20, (e.viewport?.columns ?? 100) - 4)
     const height = Math.max(8, Math.min(48, (e.viewport?.rows ?? 50) - 8))
+    const { tmux } = await hostOf($)
+    // Outside tmux the terminal reads the file itself, so no picture crosses the line; tmux passes bytes only.
     const picture = async (p: Page, maxColumns: number, key: string) => {
-      const base64 = await bytesOf($, p.png)
+      const source = tmux ? { png: await bytesOf($, p.png) } : { file: p.png, format: 'png' as const }
       const size = fit(p.w, p.h, maxColumns, height)
-      return <Image key={key} source={{ png: base64 }} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
+      return <Image key={key} source={source} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
     }
-    if (!hidden && list.length > 1) {
+    if (tmux && !hidden && list.length > 1) {
       const around = [list[(nr + 1) % list.length]!, list[(nr - 1 + list.length) % list.length]!, list[(nr + 2) % list.length]!]
       preloadAround($, [...around.map(p => p.png), ...(v.before && v.before[nr] ? [v.before[nr]!.png] : [])])
     }
@@ -443,12 +502,13 @@ async function drawView($: any, e: any, id: string, v: View) {
           <Box flexDirection="column"><Text dimColor>{words.after}</Text>{await picture(afterPage, half, 'after')}</Box>
         </Box>
       )
-      : await picture(page, width, 'picture')
+      : await picture(shownPage, width, 'picture')
     return (
       <Box flexDirection="column">
         <Text bold>{heading}</Text>
         {pictures}
         <Box flexDirection="row" gap={1}>{controls(Button, Text, true)}</Box>
+        {list.length > 1 && !hidden && <Box flexDirection="row" flexWrap="wrap">{pageStrip(Button, Text)}</Box>}
         {v.note && <Text dimColor>{v.note}</Text>}
       </Box>
     )
@@ -460,7 +520,7 @@ async function drawView($: any, e: any, id: string, v: View) {
     const base64 = await bytesOf($, p.jpg)
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${p.w} ${p.h}"><image href="data:image/jpeg;base64,${base64}" x="0" y="0" width="${p.w}" height="${p.h}"/></svg>`
   }
-  const shown = beside ? [beside, afterPage] : [page]
+  const shown = beside ? [beside, afterPage] : [shownPage]
   return (
     <Box flexDirection="column" gap={1}>
       <Text bold>{heading}</Text>

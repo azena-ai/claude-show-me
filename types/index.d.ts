@@ -17,8 +17,9 @@ export type View = {
 
 export type Mode = 'after' | 'before' | 'both'
 
-/** Where the person is in a viewer: page, before/after mode, and whether the picture is folded away. */
-export type Position = { page: number; mode: Mode; hidden?: boolean }
+/** Where the person is in a viewer: page, before/after mode, whether the picture is folded away, and the page whose
+ *  picture is drawn while a burst of page turns is still running (absent: `page`). */
+export type Position = { page: number; mode: Mode; hidden?: boolean; shown?: number }
 
 /** Checked once when the session starts: whether this session's terminal draws pictures at all, and if not, why. */
 export type Screen = { imagesOff?: 'tmux' | 'terminal' }

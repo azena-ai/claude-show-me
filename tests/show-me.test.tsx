@@ -64,9 +64,9 @@ test('Hide folds the picture away and leaves heading, Show and Open; unfolded it
   }
 })
 
-test('a page is read once, kept in memory, and the next page is read ahead', async ($, on) => {
+test('inside tmux a page is read once, kept in memory, and the next page is read ahead', async ($, on) => {
   const reads: string[] = []
-  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : undefined }))
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', (_: unknown, e: { path: string }) => { reads.push(e.path); return { value: { base64: PNG } } })
   on('state.get', (_, e) =>
@@ -79,6 +79,69 @@ test('a page is read once, kept in memory, and the next page is read ahead', asy
   expect(reads.filter(p => p === '/tmp/p-1.png').length).toBe(1)
   await ui.redraw()
   expect(reads).toContain('/tmp/p-2.png')
+  await ui.unmount()
+})
+
+test('outside tmux the terminal reads the picture file itself: no bytes cross', async ($, on) => {
+  const reads: string[] = []
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('fs.read', (_: unknown, e: { path: string }) => { reads.push(e.path); return { value: { base64: PNG } } })
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
+  )
+  const ui = await $.ui.mount(ROW('terminal'))
+  const image = await ui.find({ type: 'Image' })
+  expect((image?.props.source as { file?: string }).file).toBe('/tmp/p-1.png')
+  expect(reads.filter(p => p.endsWith('.png'))).toEqual([])
+  await ui.unmount()
+})
+
+test('clicking fast moves the page number at once and draws the last page when the clicks pause', async ($, on) => {
+  let pos: Record<string, unknown> = {}
+  let version = 1
+  const timers: Array<() => void> = []
+  stubHost(on)
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: pos }, version } },
+  )
+  on('state.set', (_, e) => { pos = ((e as any).value?.value ?? {}) as Record<string, unknown>; version += 1; return { value: { isSet: true, version } } })
+  on('clock.after', (_: unknown, e: any) => { if (typeof e?.fn === 'function') timers.push(e.fn); return { value: { cancel: () => undefined } } })
+  const ui = await $.ui.mount(ROW('terminal'))
+  const pictureOf = async () => ((await ui.find({ type: 'Image' }))?.props.source as { file?: string; png?: string })
+  const heading = async () => (await ui.find({ type: 'Text', text: /Offer\.pdf/ }))?.text
+  await ui.press({ key: 'next' }) // first click of a burst: page 2 at once
+  await ui.redraw()
+  expect(await heading()).toContain('Page 2 of 3')
+  expect((await pictureOf()).file).toBe('/tmp/p-2.png')
+  await ui.press({ key: 'next' }) // next click in the burst: only the number moves
+  await ui.redraw()
+  expect(await heading()).toContain('Page 3 of 3')
+  expect((await pictureOf()).file).toBe('/tmp/p-2.png')
+  await ui.unmount()
+})
+
+test('the page strip jumps straight to a page', async ($, on) => {
+  let pos: Record<string, unknown> = {}
+  let version = 1
+  stubHost(on)
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: pos }, version } },
+  )
+  on('state.set', (_, e) => { pos = ((e as any).value?.value ?? {}) as Record<string, unknown>; version += 1; return { value: { isSet: true, version } } })
+  const ui = await $.ui.mount(ROW('terminal'))
+  expect(await ui.find({ type: 'Button', key: 'page-3' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'page-1' })).toBeFalsy() // the page on screen is a label, not a button
+  await ui.press({ key: 'page-3' })
+  await ui.redraw()
+  expect((await ui.find({ type: 'Text', text: /Offer\.pdf/ }))?.text).toContain('Page 3 of 3')
+  expect(((await ui.find({ type: 'Image' }))?.props.source as { file?: string }).file).toBe('/tmp/p-3.png')
   await ui.unmount()
 })
 
