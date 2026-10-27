@@ -42,6 +42,28 @@ test('a PDF viewer shows its title, page, paging and before/after on every surfa
   }
 })
 
+test('Hide folds the picture away and leaves heading, Show and Open; unfolded it draws again', async ($, on) => {
+  stubHost(on)
+  let hidden = true // the stub below reads it; hooks beneath are registered before the first $ call
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: { toolu_1: { page: 0, mode: 'after', hidden } } }, version: 1 } },
+  )
+  for (const fold of [true, false]) {
+    hidden = fold
+    for (const surface of ['terminal', 'mobile'] as const) {
+      const ui = await $.ui.mount(ROW(surface))
+      expect(await ui.find({ type: 'Text', text: /Offer\.pdf/ })).toBeTruthy()
+      expect((await ui.find({ type: 'Button', key: 'fold' }))?.text).toBe(hidden ? 'Show' : 'Hide')
+      expect(Boolean(await ui.find({ type: surface === 'terminal' ? 'Image' : 'Svg' }))).toBe(!hidden)
+      expect(Boolean(await ui.find({ type: 'Button', key: 'next' }))).toBe(!hidden)
+      if (surface === 'terminal') expect(await ui.find({ type: 'Button', key: 'open' })).toBeTruthy()
+      await ui.unmount()
+    }
+  }
+})
+
 test('with no stored view the engine draws its own row', async ($, on) => {
   stubHost(on)
   on('state.get', () => ({ value: { value: {}, version: 1 } }))

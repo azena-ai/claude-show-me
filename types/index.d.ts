@@ -17,8 +17,8 @@ export type View = {
 
 export type Mode = 'after' | 'before' | 'both'
 
-/** Where the person is in a viewer: page and before/after mode. */
-export type Position = { page: number; mode: Mode }
+/** Where the person is in a viewer: page, before/after mode, and whether the picture is folded away. */
+export type Position = { page: number; mode: Mode; hidden?: boolean }
 
 declare module 'claude-code' {
   interface PluginState {

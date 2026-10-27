@@ -47,7 +47,7 @@ Besides the button, Claude gets a tool, `show`, and you get a command, `/show-me
 | a web page (https) or a local `.html` file | screenshots at desktop (1440×900) and phone (390×844) size |
 | `before=<old file>` | Before / After / Side by side, one click to switch |
 
-Every viewer has **Open** (in the default app) and, on macOS, **Show in folder**.
+Every viewer has **Hide** (folds the picture away, **Show** brings it back), **Open** (in the default app) and, on macOS, **Show in folder**.
 
 Ask for it in plain words:
 
@@ -91,7 +91,7 @@ Following a session from the Claude app (Remote Control) or a background session
 
 ### tmux
 
-Inside tmux, pictures need `allow-passthrough` (for the pane) and `focus-events`. The plugin turns both on for the running tmux session the first time it shows something; your tmux config file is not changed. If pictures still show as text, start Claude Code with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`.
+Inside tmux, pictures need `allow-passthrough` (for the pane) and `focus-events`. The plugin turns both on for the running tmux session the first time it shows something; your tmux config file is not changed. If pictures still show as text, start Claude Code with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`. If the picture area stays black, turn passthrough on for every window: add `set -g allow-passthrough on` to `~/.tmux.conf`.
 
 ## Privacy
 

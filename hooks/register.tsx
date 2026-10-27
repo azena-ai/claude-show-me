@@ -34,8 +34,8 @@ const DESCRIPTION = `Shows the person a file right in the chat, no browser neede
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
 
 const WORDS = {
-  en: { page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
-  de: { page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
+  en: { page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
+  de: { page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
 }
 type Words = (typeof WORDS)['en']
 
@@ -260,10 +260,17 @@ async function prepareAny($: any, source: string): Promise<{ kind: Kind; pages: 
 
 /** Inside tmux, pictures need allow-passthrough on this pane and focus-events on. */
 async function readyTmux($: any): Promise<void> {
-  if (!(await $.env.get('TMUX'))) return
+  const tmux = await $.env.get('TMUX')
+  if (!tmux) return
   const pane = (await $.env.get('TMUX_PANE')) ?? ''
-  await runOn($, ['tmux', 'set', '-p', ...(pane ? ['-t', pane] : []), 'allow-passthrough', 'on'], 5_000)
-  await runOn($, ['tmux', 'set', '-g', 'focus-events', 'on'], 5_000)
+  const target = pane ? ['-t', pane] : []
+  // TMUX goes along so the command reaches this session's server, whatever socket it runs on.
+  const env = { ...(await hostOf($)).env, TMUX: tmux }
+  for (const argv of [
+    ['tmux', 'set', '-p', ...target, 'allow-passthrough', 'on'],
+    ['tmux', 'set', '-w', ...target, 'allow-passthrough', 'on'],
+    ['tmux', 'set', '-g', 'focus-events', 'on'],
+  ]) await $.process.run(argv, { env, timeoutMs: 5_000 }).catch(() => undefined)
 }
 
 function expandHome(path: string, home: string): string {
@@ -331,20 +338,28 @@ async function drawView($: any, e: any, id: string, v: View) {
       const now = all?.[id] ?? at
       return { ...(all ?? {}), [id]: { ...now, page: (now.page + step + list.length) % list.length } }
     })
+  const fold = () =>
+    update($, positions, all => {
+      const now = all?.[id] ?? at
+      return { ...(all ?? {}), [id]: { ...now, hidden: !(now.hidden ?? false) } }
+    })
+  const hidden = at.hidden ?? false
   const launch = (argv: string[]) => () => void runOn($, argv, 10_000)
   const openArgv = mac ? ['open', v.source] : ['xdg-open', v.source]
   const modeName = at.mode === 'before' ? words.before : at.mode === 'both' ? `${words.before} | ${words.after}` : words.after
   const heading = `${v.title}${list.length > 1 ? ` · ${page.name}${v.kind === 'pdf' ? ` ${words.of} ${v.total}` : ''}` : ''}${v.before ? ` · ${modeName}` : ''}`
 
+  // Folded away, the row keeps its heading and the buttons that need no picture: Show, Open, Show in folder.
   const controls = (Button: any, Text: any, withOpen: boolean) => [
-    list.length > 1 && <Button key="prev" onPress={turn(-1)}>◀</Button>,
-    list.length > 1 && <Text dimColor>{`${nr + 1}/${list.length}`}</Text>,
-    list.length > 1 && <Button key="next" onPress={turn(1)}>▶</Button>,
-    v.before && <Button key="mode-before" variant={at.mode === 'before' ? 'primary' : undefined} onPress={setMode('before')}>{words.before}</Button>,
-    v.before && <Button key="mode-after" variant={at.mode === 'after' ? 'primary' : undefined} onPress={setMode('after')}>{words.after}</Button>,
-    v.before && <Button key="mode-both" variant={at.mode === 'both' ? 'primary' : undefined} onPress={setMode('both')}>{words.both}</Button>,
+    !hidden && list.length > 1 && <Button key="prev" onPress={turn(-1)}>◀</Button>,
+    !hidden && list.length > 1 && <Text dimColor>{`${nr + 1}/${list.length}`}</Text>,
+    !hidden && list.length > 1 && <Button key="next" onPress={turn(1)}>▶</Button>,
+    !hidden && v.before && <Button key="mode-before" variant={at.mode === 'before' ? 'primary' : undefined} onPress={setMode('before')}>{words.before}</Button>,
+    !hidden && v.before && <Button key="mode-after" variant={at.mode === 'after' ? 'primary' : undefined} onPress={setMode('after')}>{words.after}</Button>,
+    !hidden && v.before && <Button key="mode-both" variant={at.mode === 'both' ? 'primary' : undefined} onPress={setMode('both')}>{words.both}</Button>,
     withOpen && <Button key="open" onPress={launch(openArgv)}>{words.open}</Button>,
     withOpen && mac && !URL_RE.test(v.source) && <Button key="reveal" onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>,
+    <Button key="fold" onPress={fold}>{hidden ? words.expand : words.collapse}</Button>,
   ]
 
   if (e.surface === 'terminal') {
@@ -357,7 +372,9 @@ async function drawView($: any, e: any, id: string, v: View) {
       return <Image key={key} source={{ png: base64 }} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
     }
     const half = Math.floor((width - 2) / 2)
-    const pictures = beside
+    const pictures = hidden
+      ? null
+      : beside
       ? (
         <Box flexDirection="row" gap={2}>
           <Box flexDirection="column"><Text dimColor>{words.before}</Text>{await picture(beside, half, 'before')}</Box>
@@ -385,11 +402,11 @@ async function drawView($: any, e: any, id: string, v: View) {
   return (
     <Box flexDirection="column" gap={1}>
       <Text bold>{heading}</Text>
-      <Box flexDirection="row" gap={1}>
+      {!hidden && <Box flexDirection="row" gap={1}>
         {await Promise.all(shown.map(async (p, i) => (
           <Svg source={await svgOf(p)} alt={`${v.title}${beside ? (i === 0 ? ` ${words.before}` : ` ${words.after}`) : ''}`} width={beside ? 300 : 620} />
         )))}
-      </Box>
+      </Box>}
       <Box flexDirection="row" gap={1}>{controls(Button, Text, false)}</Box>
       {v.note && <Text dimColor>{v.note}</Text>}
     </Box>
