@@ -20,9 +20,24 @@ From a shell:
 claude plugin install show-me --marketplace azena-ai/claude-show-me
 ```
 
+## The “show me” button
+
+Whenever Claude reads an image or a PDF, Claude Code shows a line like `Read image (45KB)`. show-me puts a button right next to it:
+
+```
+  ⎿  Read image (45KB)   [ show me ]
+```
+
+Nothing runs until you press it, so it never slows the session down:
+
+- **In the terminal** the picture unfolds below the line (press again to fold it). A PNG is drawn straight from the bytes Claude Code already holds; other formats are converted once and the terminal reads the file itself. A PDF opens in the viewer, pages to turn.
+- **In the Claude app** the original file is sent to you as a file card, at full resolution.
+
+Turn the button off or on with `/show-me buttons off` and `/show-me buttons on`.
+
 ## What it does
 
-Claude gets a tool, `show`, and you get a command, `/show-me <path>`.
+Besides the button, Claude gets a tool, `show`, and you get a command, `/show-me <path>`.
 
 | You give it | You see in the chat |
 |---|---|

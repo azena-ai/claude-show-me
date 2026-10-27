@@ -25,6 +25,8 @@ declare module 'claude-code' {
     'show-me': {
       views: Shaped<Record<string, View>>
       positions: Shaped<Record<string, Position>>
+      /** Whether a Read row's picture is unfolded in the terminal, per tool_use_id. */
+      open: StateFamily<boolean>
     }
   }
 }

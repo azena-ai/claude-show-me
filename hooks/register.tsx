@@ -34,8 +34,8 @@ const DESCRIPTION = `Shows the person a file right in the chat, no browser neede
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
 
 const WORDS = {
-  en: { page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>]', failed: 'Could not show it' },
-  de: { page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>]', failed: 'Konnte nicht zeigen' },
+  en: { page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
+  de: { page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
 }
 type Words = (typeof WORDS)['en']
 
@@ -62,10 +62,10 @@ async function hostOf($: any): Promise<Host> {
   return hostFacts
 }
 
-async function runOn($: any, argv: string[], timeoutMs = 90_000): Promise<Run> {
+async function runOn($: any, argv: string[], timeoutMs = 90_000, stdin?: string): Promise<Run> {
   const { env } = await hostOf($)
   try {
-    const r = await $.process.run(argv, { env, timeoutMs })
+    const r = await $.process.run(argv, { env, timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
     return { code: r.exitCode, out: r.stdout, err: r.stderr }
   } catch (error) {
     return { code: 127, out: '', err: String(error) }
@@ -81,9 +81,9 @@ async function cacheDirFor($: any, source: string): Promise<string> {
   } catch {
     key += `|${Date.now()}`
   }
-  let h = 2166136261
-  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619)
-  const dir = `${tmp}/show-me/${(h >>> 0).toString(36)}`
+  let hash = 2166136261
+  for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619)
+  const dir = `${tmp}/show-me/${(hash >>> 0).toString(36)}`
   await runOn($, ['mkdir', '-p', dir])
   return dir
 }
@@ -101,13 +101,13 @@ async function pixelsOf($: any, path: string): Promise<{ w: number; h: number }>
   const { mac } = await hostOf($)
   if (mac) {
     const r = await runOn($, ['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path])
-    const w = Number((/pixelWidth:\s*(\d+)/.exec(r.out) ?? [])[1] ?? 0)
-    const h = Number((/pixelHeight:\s*(\d+)/.exec(r.out) ?? [])[1] ?? 0)
-    if (w && h) return { w, h }
+    const width = Number((/pixelWidth:\s*(\d+)/.exec(r.out) ?? [])[1] ?? 0)
+    const height = Number((/pixelHeight:\s*(\d+)/.exec(r.out) ?? [])[1] ?? 0)
+    if (width && height) return { w: width, h: height }
   }
   const r = await runOn($, ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', path])
-  const [w, h] = r.out.trim().split('x').map(Number)
-  return { w: w || 1200, h: h || 900 }
+  const [width, height] = r.out.trim().split('x').map(Number)
+  return { w: width || 1200, h: height || 900 }
 }
 
 /** Writes a scaled copy (longest side at most `edge`) as PNG or JPEG: sips on macOS, ffmpeg elsewhere. */
@@ -271,12 +271,12 @@ async function createView($: any, id: string, input: { file: string; before?: st
 
 // ---------------------------------------------------------------- drawing
 
-function fit(w: number, h: number, maxColumns: number, maxRows: number) {
+function fit(width: number, height: number, maxColumns: number, maxRows: number) {
   let columns = Math.max(8, Math.min(maxColumns, 255))
-  let rows = Math.round((columns * h) / w / CELL)
+  let rows = Math.round((columns * height) / width / CELL)
   if (rows > maxRows) {
     rows = maxRows
-    columns = Math.max(8, Math.round((rows * CELL * w) / h))
+    columns = Math.max(8, Math.round((rows * CELL * width) / height))
   }
   return { columns: Math.min(columns, 255), rows: Math.max(2, Math.min(rows, 255)) }
 }
@@ -361,9 +361,122 @@ async function drawView($: any, e: any, id: string, v: View) {
   )
 }
 
+// ---------------------------------------------------------------- the "show me" button on Read rows
+//
+// Nothing runs until the person presses it:
+//   terminal  PNG the model read → drawn from the bytes Claude Code already holds
+//             JPEG/WebP/GIF      → converted once, the terminal reads the file itself
+//             PDF                → the full viewer, pages to turn
+//   app       the original file is sent as a file card (no conversion)
+
+const OPEN = { plugin: 'show-me', key: 'open' } as const
+const readPaths = new Map<string, string>() // tool_use_id → the path Read was given
+const converted = new Map<string, { file: string; png?: string; w: number; h: number }>()
+
+type ReadImage = { type: 'image'; file: { base64: string; type: string; dimensions?: { originalWidth?: number; originalHeight?: number; displayWidth?: number; displayHeight?: number } } }
+type ReadPdf = { type: 'pdf' | 'parts'; file: { filePath: string } }
+
+function remember(id: string, path: string) {
+  readPaths.set(id, path)
+  if (readPaths.size > 500) readPaths.delete(readPaths.keys().next().value!)
+}
+
+async function buttonsOff($: any): Promise<boolean> {
+  return (await $.store.get('buttons').catch(() => undefined)) === 'off'
+}
+
+async function readSource($: any, id: string, out: ReadImage | ReadPdf): Promise<string> {
+  const known = readPaths.get(id)
+  if (known) return known
+  if (out.type !== 'image') return out.file.filePath
+  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
+  await runOn($, ['mkdir', '-p', `${tmp}/show-me`])
+  const ext = out.file.type.split('/')[1] ?? 'png'
+  const target = `${tmp}/show-me/read-${id}.${ext}`
+  await runOn($, ['sh', '-c', '(base64 -d 2>/dev/null || base64 -D) > "$1"', 'sh', target], 30_000, out.file.base64)
+  return target
+}
+
+async function pressInApp($: any, id: string, out: ReadImage | ReadPdf) {
+  const file = await readSource($, id, out)
+  await $.tool.call({ tool: 'SendUserFile', files: [file], status: 'normal', display: 'render', caption: file.split('/').pop() })
+}
+
+async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf) {
+  const { value: isOpen = false } = await $.state.get({ ...OPEN, id })
+  if (!isOpen) {
+    if (out.type === 'image' && out.file.type !== 'image/png' && !converted.has(id)) {
+      const source = await readSource($, id, out)
+      const dir = await cacheDirFor($, source)
+      const page = await pageFromPicture($, source, dir, 'read', '')
+      converted.set(id, { file: page.png, w: page.w, h: page.h })
+    }
+    if (out.type !== 'image' && !(await read($, views))[id]) {
+      await createView($, id, { file: out.file.filePath, title: out.file.filePath.split('/').pop() })
+    }
+  }
+  await update($, { ...OPEN, id }, (v: boolean | undefined) => !v)
+}
+
+async function readPicture($: any, e: any, id: string, out: ReadImage) {
+  const { Image } = $.ui.resolve(e)
+  const inTmux = Boolean(await $.env.get('TMUX'))
+  const d = out.file.dimensions ?? {}
+  let width = d.displayWidth ?? d.originalWidth ?? 1200
+  let height = d.displayHeight ?? d.originalHeight ?? 800
+  let source: Record<string, unknown>
+  const done = converted.get(id)
+  if (out.file.type === 'image/png' && out.file.base64.length * 0.75 <= 2_000_000) {
+    source = { png: out.file.base64 } // already in memory: nothing read, nothing converted
+  } else if (done) {
+    width = done.w
+    height = done.h
+    if (inTmux) {
+      done.png ??= (await $.fs.read(done.file, { as: 'bytes' })).base64
+      source = { png: done.png }
+    } else source = { file: done.file, format: 'png' } // the terminal reads the file itself
+  } else return undefined
+  const size = fit(width, height, Math.min(90, Math.max(20, (e.viewport?.columns ?? 100) - 6)), 24)
+  return <Image key="read" source={source} columns={size.columns} rows={size.rows} alt="read image" />
+}
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = on => {
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    const ran = await next(e)
+    const path = String((e as { file_path?: unknown }).file_path ?? '')
+    if (IMAGE.test(path) || PDF.test(path)) remember(e.tool_use_id, path)
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('ui.render', { component: 'ToolResult', props: { tool: 'Read' } }, async ($, e, next) => {
+    const props = e.props as { output?: unknown; isErrored?: boolean }
+    const out = props.output as ReadImage | ReadPdf | undefined
+    if (props.isErrored || !out || !['image', 'pdf', 'parts'].includes(out.type)) return next(e)
+    if (await buttonsOff($)) return next(e)
+    const id = e.requestId
+    const own = await next(e)
+    const { Box, Button } = $.ui.resolve(e)
+    const terminal = e.surface === 'terminal'
+    const { value: isOpen = false } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
+    const { words } = await hostOf($)
+    const press = terminal ? () => void pressInTerminal($, id, out) : () => void pressInApp($, id, out)
+    const row = (
+      <Box flexDirection="row" gap={1}>
+        {own}
+        <Button key="show-me" onPress={press}>{isOpen ? words.hide : 'show me'}</Button>
+      </Box>
+    )
+    if (!isOpen) return row
+    if (out.type === 'image') {
+      const picture = await readPicture($, e, id, out)
+      return <Box flexDirection="column">{row}{picture}</Box>
+    }
+    const v = (await read($, views))[id]
+    return v ? <Box flexDirection="column">{row}{await drawView($, e, id, v)}</Box> : row
+  })
+
   on('session.start', async ($, e, next) => {
     await $.tool.register({
       name: 'show',
@@ -397,6 +510,11 @@ export const register: Register = on => {
     const { words } = await hostOf($)
     const args = String((e as any).args ?? '').trim()
     if (!args) return { text: words.usage }
+    const toggle = /^buttons\s+(on|off)$/i.exec(args)
+    if (toggle) {
+      await $.store.set('buttons', toggle[1]!.toLowerCase())
+      return { text: toggle[1]!.toLowerCase() === 'off' ? words.buttonsOff : words.buttonsOn }
+    }
     const before = (/\bbefore=(\S+)/.exec(args) ?? [])[1]
     const file = args.replace(/\bbefore=\S+/, '').trim()
     const id = `cmd-${Date.now().toString(36)}`

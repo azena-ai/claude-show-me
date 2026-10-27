@@ -53,3 +53,52 @@ test('with no stored view the engine draws its own row', async ($, on) => {
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
   await ui.unmount()
 })
+
+const READ_ROW = (surface: 'terminal' | 'mobile') => ({
+  plugin: 'show-me',
+  component: 'ToolResult',
+  requestId: 'toolu_read',
+  surface,
+  props: { tool_use_id: 'toolu_read', tool: 'Read', isErrored: false,
+    output: { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 70, dimensions: { displayWidth: 800, displayHeight: 600 } } } },
+}) as const
+
+function engineRow(on: any) {
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>Read image (70B)</Text>
+  })
+}
+
+test('a Read image row gets a "show me" button and draws nothing more while closed', async ($, on) => {
+  stubHost(on)
+  engineRow(on)
+  on('store.get', () => ({ value: undefined }))
+  on('state.get', () => ({ value: { value: false, version: 1 } }))
+  for (const surface of ['terminal', 'mobile'] as const) {
+    const ui = await $.ui.mount(READ_ROW(surface))
+    expect((await ui.find({ type: 'Text', text: /Read image/ }))?.text).toBe('Read image (70B)')
+    expect(await ui.find({ type: 'Button', key: 'show-me' })).toBeTruthy()
+    expect(await ui.find({ type: 'Image' })).toBeFalsy()
+    await ui.unmount()
+  }
+})
+
+test('pressed open in the terminal, the PNG Claude Code already holds is drawn', async ($, on) => {
+  stubHost(on)
+  engineRow(on)
+  on('store.get', () => ({ value: undefined }))
+  on('state.get', () => ({ value: { value: true, version: 2 } }))
+  const ui = await $.ui.mount(READ_ROW('terminal'))
+  expect(await ui.find({ type: 'Image', key: 'read' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'show-me' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a text Read is left to the engine', async ($, on) => {
+  stubHost(on)
+  engineRow(on)
+  const ui = await $.ui.mount({ ...READ_ROW('terminal'), props: { tool_use_id: 'toolu_read', tool: 'Read', isErrored: false, output: { type: 'text', file: { filePath: '/a.md', content: '#', numLines: 1, startLine: 1, totalLines: 1 } } } })
+  expect(await ui.find({ type: 'Button', key: 'show-me' })).toBeFalsy()
+  await ui.unmount()
+})
