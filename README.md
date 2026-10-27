@@ -95,7 +95,7 @@ Inside tmux, pictures need `allow-passthrough` (for the pane) and `focus-events`
 
 ## Privacy
 
-Everything happens on your machine. No telemetry, no self-updating, no network requests by the plugin. Only a web page you ask it to show is loaded, by your own Chrome. Prepared pictures are cached in a folder only you can read: `$TMPDIR/show-me/` (per user on macOS) or `~/.cache/show-me/`, never a shared `/tmp`.
+Everything happens on your machine. No telemetry, no self-updating, no network requests by the plugin. Only a web page you ask it to show is loaded, by your own Chrome. Prepared pictures are cached in a folder only you can read: `$TMPDIR/show-me/` when `TMPDIR` belongs to you alone (as on macOS), else `$XDG_RUNTIME_DIR/show-me/` or `~/.cache/show-me/`. The plugin checks owner and permissions before writing and never uses a shared `/tmp`.
 
 ## Auf Deutsch
 

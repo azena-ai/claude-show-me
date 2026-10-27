@@ -40,7 +40,7 @@ const WORDS = {
 type Words = (typeof WORDS)['en']
 
 type Run = { code: number; out: string; err: string }
-type Host = { mac: boolean; words: Words; env: Record<string, string> }
+type Host = { mac: boolean; uid: number; words: Words; env: Record<string, string> }
 
 // ---------------------------------------------------------------- the host
 
@@ -53,12 +53,14 @@ async function hostOf($: any): Promise<Host> {
   const env = { PATH: `/opt/homebrew/bin:/usr/local/bin:${path}`, HOME: home, LANG: 'C' }
   const uname = await $.process.run(['uname'], { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))
   const mac = /Darwin/.test(uname.stdout)
+  const who = await $.process.run(['id', '-u'], { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))
+  const uid = Number(who.stdout.trim())
   let lang = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG')) || ''
   if (!lang && mac) {
     const r = await $.process.run(['defaults', 'read', '-g', 'AppleLocale'], { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))
     lang = r.stdout
   }
-  hostFacts = { mac, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
+  hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
   return hostFacts
 }
 
@@ -72,16 +74,37 @@ async function runOn($: any, argv: string[], timeoutMs = 90_000, stdin?: string)
   }
 }
 
-/** The plugin's own cache folder, private to this user: $TMPDIR (per user on macOS) or ~/.cache, never a shared /tmp. */
+/** Owner, permission bits and type of a path, without following a link (stat's default on macOS and Linux). */
+async function statOf($: any, path: string): Promise<{ uid: number; mode: number; type: string } | undefined> {
+  const { mac } = await hostOf($)
+  const r = await runOn($, mac ? ['stat', '-f', '%u %Lp %HT', path] : ['stat', '-c', '%u %a %F', path], 5_000)
+  if (r.code !== 0) return undefined
+  const [uid, mode, ...type] = r.out.trim().split(' ')
+  return { uid: Number(uid), mode: parseInt(mode ?? '777', 8), type: type.join(' ').toLowerCase() }
+}
+
+/** The plugin's own cache folder, private to this user: a per-user TMPDIR (macOS), else $XDG_RUNTIME_DIR or ~/.cache.
+ *  A shared, writable TMPDIR such as /tmp is never used. Fails unless the folder is a real directory owned by
+ *  this user with no rights for anyone else; the hash folders inside it can then only be made by this user. */
 async function privateDir($: any): Promise<string> {
-  const tmp = await $.env.get('TMPDIR')
+  const { uid } = await hostOf($)
+  if (uid < 0) throw new Error('could not tell the current user')
+  const tmp = ((await $.env.get('TMPDIR')) ?? '').replace(/\/$/, '')
   const home = (await $.env.get('HOME')) ?? ''
-  if (!tmp && !home) throw new Error('no TMPDIR or HOME for the cache folder')
-  const dir = tmp ? `${tmp.replace(/\/$/, '')}/show-me` : `${home}/.cache/show-me`
-  await runOn($, ['mkdir', '-p', '-m', '700', dir])
-  await runOn($, ['chmod', '700', dir])
-  const s = await $.fs.stat(dir).catch(() => undefined)
-  if (!s || s.kind !== 'dir' || s.isLink) throw new Error(`the cache folder is not a private directory: ${dir}`)
+  let base = ''
+  if (tmp) {
+    const t = await statOf($, tmp)
+    if (t && t.uid === uid && (t.mode & 0o022) === 0 && t.type.startsWith('directory')) base = tmp
+  }
+  if (!base) base = (await $.env.get('XDG_RUNTIME_DIR')) || (home ? `${home}/.cache` : '')
+  if (!base) throw new Error('no private folder for the cache (TMPDIR, XDG_RUNTIME_DIR or HOME)')
+  const dir = `${base}/show-me`
+  if ((await runOn($, ['mkdir', '-p', '-m', '700', dir])).code !== 0) throw new Error(`could not make ${dir}`)
+  if ((await runOn($, ['chmod', '700', dir])).code !== 0) throw new Error(`could not protect ${dir}`)
+  const s = await statOf($, dir)
+  if (!s || s.uid !== uid || (s.mode & 0o077) !== 0 || !s.type.startsWith('directory')) {
+    throw new Error(`the cache folder is not a private directory of this user: ${dir}`)
+  }
   return dir
 }
 
@@ -96,7 +119,7 @@ async function cacheDirFor($: any, source: string): Promise<string> {
   let hash = 2166136261
   for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619)
   const dir = `${await privateDir($)}/${(hash >>> 0).toString(36)}`
-  await runOn($, ['mkdir', '-p', '-m', '700', dir])
+  if ((await runOn($, ['mkdir', '-p', '-m', '700', dir])).code !== 0) throw new Error(`could not make ${dir}`)
   return dir
 }
 
