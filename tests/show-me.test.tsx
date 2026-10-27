@@ -64,6 +64,24 @@ test('Hide folds the picture away and leaves heading, Show and Open; unfolded it
   }
 })
 
+test('a page is read once, kept in memory, and the next page is read ahead', async ($, on) => {
+  const reads: string[] = []
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('fs.read', (_: unknown, e: { path: string }) => { reads.push(e.path); return { value: { base64: PNG } } })
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
+  )
+  const ui = await $.ui.mount(ROW('terminal'))
+  await ui.redraw()
+  expect(reads.filter(p => p === '/tmp/p-1.png').length).toBe(1)
+  await ui.redraw()
+  expect(reads).toContain('/tmp/p-2.png')
+  await ui.unmount()
+})
+
 test('with no stored view the engine draws its own row', async ($, on) => {
   stubHost(on)
   on('state.get', () => ({ value: { value: {}, version: 1 } }))

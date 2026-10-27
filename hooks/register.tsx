@@ -25,6 +25,8 @@ const URL_RE = /^https?:\/\//i
 const HTML = /\.html?$/i
 const CHROMES = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium', 'google-chrome', 'chromium', 'chromium-browser']
 const MAX_PDF_PAGES = 60
+const PDF_EDGE = 1200
+const BYTES_KEPT = 48 // pictures held in memory for instant paging
 const MAX_VIEWS = 60
 const PNG_LIMIT = 1_900_000 // an Image takes at most 2 MiB
 const SVG_LIMIT = 120_000 // an Svg source takes at most 131,072 characters
@@ -187,14 +189,15 @@ async function preparePdf($: any, source: string): Promise<{ pages: Page[]; tota
   const total = Number((/Pages:\s+(\d+)/.exec(info.out) ?? [])[1] ?? '1')
   const last = Math.min(total, MAX_PDF_PAGES)
   const listed = ((await $.fs.list(dir).catch(() => [])) as any[]).map(f => f.name)
-  if (!listed.some(n => /^p-\d+\.png$/.test(n))) {
-    await runOn($, ['pdftoppm', '-r', '110', '-png', '-f', '1', '-l', String(last), source, `${dir}/p`], 240_000)
+  if (!listed.some(n => /^s-\d+\.png$/.test(n))) {
+    // longest side 1200 px: sharp at full terminal width, a few hundred KB a page, so paging stays instant
+    await runOn($, ['pdftoppm', '-scale-to', String(PDF_EDGE), '-png', '-f', '1', '-l', String(last), source, `${dir}/s`], 240_000)
     await runOn($, ['pdftoppm', '-jpeg', '-jpegopt', 'quality=55', '-scale-to', '560', '-f', '1', '-l', String(last), source, `${dir}/v`], 240_000)
   }
-  const files = ((await $.fs.list(dir)) as any[]).map(f => f.name).filter(n => /^p-\d+\.png$/.test(n)).sort()
+  const files = ((await $.fs.list(dir)) as any[]).map(f => f.name).filter(n => /^s-\d+\.png$/.test(n)).sort()
   const pages: Page[] = []
   for (const [i, file] of files.entries()) {
-    const nr = /p-(\d+)\.png$/.exec(file)![1]
+    const nr = /s-(\d+)\.png$/.exec(file)![1]
     const size = await pixelsOf($, `${dir}/${file}`)
     pages.push({ png: `${dir}/${file}`, jpg: `${dir}/v-${nr}.jpg`, w: size.w, h: size.h, name: `${words.page} ${i + 1}` })
   }
@@ -323,6 +326,30 @@ function fit(width: number, height: number, maxColumns: number, maxRows: number)
   return { columns: Math.min(columns, 255), rows: Math.max(2, Math.min(rows, 255)) }
 }
 
+// Pictures already read, by path: a page turn draws from memory instead of reading the file again.
+const pictureBytes = new Map<string, string>()
+
+async function bytesOf($: any, path: string): Promise<string> {
+  const kept = pictureBytes.get(path)
+  if (kept !== undefined) {
+    pictureBytes.delete(path)
+    pictureBytes.set(path, kept) // most recent last
+    return kept
+  }
+  const { base64 } = await $.fs.read(path, { as: 'bytes' })
+  pictureBytes.set(path, base64)
+  while (pictureBytes.size > BYTES_KEPT) pictureBytes.delete(pictureBytes.keys().next().value!)
+  return base64
+}
+
+/** Reads the pages around the one on screen ahead of time, in the background: a local file takes milliseconds,
+ *  and a newer drawing that cancels a read simply asks again for its own neighbours. */
+function preloadAround($: any, paths: string[]) {
+  void (async () => {
+    for (const path of paths) if (!pictureBytes.has(path)) await bytesOf($, path).catch(() => undefined)
+  })()
+}
+
 async function drawView($: any, e: any, id: string, v: View) {
   const { words, mac } = await hostOf($)
   const at: Position = (await read($, positions))[id] ?? { page: 0, mode: 'after' }
@@ -367,9 +394,13 @@ async function drawView($: any, e: any, id: string, v: View) {
     const width = Math.max(20, (e.viewport?.columns ?? 100) - 4)
     const height = Math.max(8, Math.min(48, (e.viewport?.rows ?? 50) - 8))
     const picture = async (p: Page, maxColumns: number, key: string) => {
-      const { base64 } = await $.fs.read(p.png, { as: 'bytes' })
+      const base64 = await bytesOf($, p.png)
       const size = fit(p.w, p.h, maxColumns, height)
       return <Image key={key} source={{ png: base64 }} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
+    }
+    if (!hidden && list.length > 1) {
+      const around = [list[(nr + 1) % list.length]!, list[(nr - 1 + list.length) % list.length]!, list[(nr + 2) % list.length]!]
+      preloadAround($, [...around.map(p => p.png), ...(v.before && v.before[nr] ? [v.before[nr]!.png] : [])])
     }
     const half = Math.floor((width - 2) / 2)
     const pictures = hidden
@@ -395,7 +426,7 @@ async function drawView($: any, e: any, id: string, v: View) {
   // Claude app, desktop, VS Code: an Svg with the JPEG embedded
   const { Box, Text, Button, Svg } = $.ui.resolve(e)
   const svgOf = async (p: Page) => {
-    const { base64 } = await $.fs.read(p.jpg, { as: 'bytes' })
+    const base64 = await bytesOf($, p.jpg)
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${p.w} ${p.h}"><image href="data:image/jpeg;base64,${base64}" x="0" y="0" width="${p.w}" height="${p.h}"/></svg>`
   }
   const shown = beside ? [beside, afterPage] : [page]

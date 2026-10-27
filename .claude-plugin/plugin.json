@@ -1,6 +1,6 @@
 {
   "name": "show-me",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Claude shows its work right in the chat: images, PDFs you can page through, video contact sheets, web page screenshots and before/after, in the terminal and in the Claude app.",
   "author": {
     "name": "azena.ai",
