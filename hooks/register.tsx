@@ -261,7 +261,12 @@ async function createView($: any, id: string, input: { file: string; before?: st
     video: 'a video as a contact sheet plus 6 frames',
     web: 'a web page as desktop and phone screenshots',
   }[ready.kind]
-  return `Shown in the chat: "${title}" (${what}${before ? ', with before/after' : ''}). The person sees it right there.`
+  const sentence = `Shown in the chat: "${title}" (${what}${before ? ', with before/after' : ''}).`
+  // Followed from the Claude app or a background session: no terminal draws the picture there.
+  const surfaces: readonly string[] = await $.session.surfaces().catch(() => [])
+  if (surfaces.includes('terminal')) return `${sentence} The person sees it right there.`
+  const files = [...(before ?? []).slice(0, 3), ...ready.pages.slice(0, 6)].map(p => p.png)
+  return `${sentence} The person is not at a terminal, so the picture may not show for them. If you can send files to the person (for example SendUserFile), send these now: ${files.join(' ')}`
 }
 
 // ---------------------------------------------------------------- drawing

@@ -63,6 +63,8 @@ Or type it yourself:
 
 The picture never goes to the model, so showing it costs no tokens. Claude only reads one line saying what was shown.
 
+Following a session from the Claude app (Remote Control) or a background session? There is no terminal to draw in, so the plugin hands Claude the prepared pictures and asks it to send them as files, which arrive in the app.
+
 ## Requirements
 
 - Claude Code 2.1.311 or later.
