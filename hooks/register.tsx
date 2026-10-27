@@ -72,8 +72,20 @@ async function runOn($: any, argv: string[], timeoutMs = 90_000, stdin?: string)
   }
 }
 
+/** The plugin's own cache folder, private to this user: $TMPDIR (per user on macOS) or ~/.cache, never a shared /tmp. */
+async function privateDir($: any): Promise<string> {
+  const tmp = await $.env.get('TMPDIR')
+  const home = (await $.env.get('HOME')) ?? ''
+  if (!tmp && !home) throw new Error('no TMPDIR or HOME for the cache folder')
+  const dir = tmp ? `${tmp.replace(/\/$/, '')}/show-me` : `${home}/.cache/show-me`
+  await runOn($, ['mkdir', '-p', '-m', '700', dir])
+  await runOn($, ['chmod', '700', dir])
+  const s = await $.fs.stat(dir).catch(() => undefined)
+  if (!s || s.kind !== 'dir' || s.isLink) throw new Error(`the cache folder is not a private directory: ${dir}`)
+  return dir
+}
+
 async function cacheDirFor($: any, source: string): Promise<string> {
-  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
   let key = source
   try {
     const s = await $.fs.stat(source)
@@ -83,8 +95,8 @@ async function cacheDirFor($: any, source: string): Promise<string> {
   }
   let hash = 2166136261
   for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619)
-  const dir = `${tmp}/show-me/${(hash >>> 0).toString(36)}`
-  await runOn($, ['mkdir', '-p', dir])
+  const dir = `${await privateDir($)}/${(hash >>> 0).toString(36)}`
+  await runOn($, ['mkdir', '-p', '-m', '700', dir])
   return dir
 }
 
@@ -385,15 +397,17 @@ async function buttonsOff($: any): Promise<boolean> {
   return (await $.store.get('buttons').catch(() => undefined)) === 'off'
 }
 
+const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
+
 async function readSource($: any, id: string, out: ReadImage | ReadPdf): Promise<string> {
   const known = readPaths.get(id)
   if (known) return known
   if (out.type !== 'image') return out.file.filePath
-  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
-  await runOn($, ['mkdir', '-p', `${tmp}/show-me`])
-  const ext = out.file.type.split('/')[1] ?? 'png'
-  const target = `${tmp}/show-me/read-${id}.${ext}`
-  await runOn($, ['sh', '-c', '(base64 -d 2>/dev/null || base64 -D) > "$1"', 'sh', target], 30_000, out.file.base64)
+  const ext = EXTENSIONS[out.file.type] ?? 'png'
+  const safeId = id.replace(/[^A-Za-z0-9_-]/g, '')
+  const target = `${await privateDir($)}/read-${safeId}.${ext}`
+  // noclobber: never write through a file or link that is already there
+  await runOn($, ['sh', '-c', 'rm -f "$1" && set -C && (base64 -d 2>/dev/null || base64 -D) > "$1"', 'sh', target], 30_000, out.file.base64)
   return target
 }
 
