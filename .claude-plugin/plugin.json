@@ -1,0 +1,25 @@
+{
+  "name": "show-me",
+  "version": "0.1.0",
+  "description": "Claude shows its work right in the chat: images, PDFs you can page through, video contact sheets, web page screenshots and before/after, in the terminal and in the Claude app.",
+  "author": {
+    "name": "azena.ai",
+    "url": "https://azena.ai"
+  },
+  "homepage": "https://github.com/azena-ai/claude-show-me",
+  "repository": "https://github.com/azena-ai/claude-show-me",
+  "license": "MIT",
+  "keywords": [
+    "preview",
+    "images",
+    "pdf",
+    "video",
+    "before-after",
+    "terminal",
+    "kitty",
+    "ghostty",
+    "qa"
+  ],
+  "types": "./types/index.d.ts",
+  "icon": "./.claude-plugin/icon.png"
+}

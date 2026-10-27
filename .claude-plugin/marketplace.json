@@ -1,0 +1,14 @@
+{
+  "name": "azena-ai",
+  "description": "Claude Code plugins by azena.ai",
+  "owner": {
+    "name": "azena.ai",
+    "url": "https://azena.ai"
+  },
+  "plugins": [
+    {
+      "name": "show-me",
+      "source": "./"
+    }
+  ]
+}
