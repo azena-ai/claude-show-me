@@ -29,6 +29,7 @@ const MAX_PDF_PAGES = 60
 const PDF_EDGE = 1200
 const BYTES_KEPT = 48 // pictures held in memory for instant paging
 const SENT_SHOWN = 3 // files of one SendUserFile drawn in the terminal
+const GROUP_PICTURES = 4 // pictures drawn under one folded line of reads
 const SETTLE_MS = 280 // paging fast: the picture follows once the clicks pause
 const PALETTE_ABOVE = 200_000 // PDF pages larger than this go to 256 colours (about half the bytes)
 const MAX_VIEWS = 60
@@ -67,7 +68,7 @@ async function hostOf($: any): Promise<Host> {
     const r = await $.process.run(['defaults', 'read', '-g', 'AppleLocale'], { env, timeoutMs: 5_000 }).catch(() => ({ stdout: '' }))
     lang = r.stdout
   }
-  const tmux = Boolean(await $.env.get('TMUX'))
+  const tmux = Boolean(await tmuxOf($))
   // Over ssh the terminal sits on another computer and cannot read our files: only then do pictures cross as bytes.
   const remote = Boolean((await $.env.get('SSH_CONNECTION')) || (await $.env.get('SSH_TTY')))
   hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, tmux, remote, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
@@ -302,7 +303,7 @@ async function prepareAny($: any, source: string): Promise<{ kind: Kind; pages: 
  *  so a viewer can say why it shows no picture instead of a grey line. CLAUDE_CODE_FORCE_TERMINAL_IMAGES overrides. */
 async function checkScreen($: any): Promise<Screen> {
   if ((await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1') return {}
-  const tmux = await $.env.get('TMUX')
+  const tmux = await tmuxOf($)
   if (!tmux) return (await $.env.get('TERM_PROGRAM')) === 'Apple_Terminal' ? { imagesOff: 'terminal' } : {}
   const pane = (await $.env.get('TMUX_PANE')) ?? ''
   const env = { ...(await hostOf($)).env, TMUX: tmux }
@@ -312,9 +313,19 @@ async function checkScreen($: any): Promise<Screen> {
   return (pass === 'on' || pass === 'all') && focus === 'on' ? {} : { imagesOff: 'tmux' }
 }
 
+/** The tmux this session runs in, or undefined. TMUX alone is no proof: a terminal started from inside tmux hands it
+ *  to every tab it opens (28.10.: Ghostty did, so every plain tab looked like tmux). tmux itself sets TERM_PROGRAM. */
+async function tmuxOf($: any): Promise<string | undefined> {
+  const tmux = await $.env.get('TMUX')
+  if (!tmux) return undefined
+  const program = (await $.env.get('TERM_PROGRAM')) ?? ''
+  const term = (await $.env.get('TERM')) ?? ''
+  return program === 'tmux' || /^(tmux|screen)/.test(term) ? tmux : undefined
+}
+
 /** Inside tmux, pictures need allow-passthrough on this pane and focus-events on. */
 async function readyTmux($: any): Promise<void> {
-  const tmux = await $.env.get('TMUX')
+  const tmux = await tmuxOf($)
   if (!tmux) return
   const pane = (await $.env.get('TMUX_PANE')) ?? ''
   const target = pane ? ['-t', pane] : []
@@ -660,7 +671,7 @@ function startPreparing($: any, id: string, out: ReadImage | ReadPdf) {
     .catch(() => undefined)
 }
 
-async function readPicture($: any, e: any, id: string, out: ReadImage) {
+async function readPicture($: any, e: any, id: string, out: ReadImage, key = 'read') {
   const { Image, Text } = $.ui.resolve(e)
   const { imagesOff } = await read($, screen)
   if (imagesOff) {
@@ -687,7 +698,37 @@ async function readPicture($: any, e: any, id: string, out: ReadImage) {
     } else source = { file: done.file, format: 'png' } // the terminal reads the file itself
   } else return undefined
   const size = fit(width, height, Math.min(GLANCE.columns, Math.max(20, (e.viewport?.columns ?? 100) - 6)), GLANCE.rows)
-  return <Image key="read" source={source} columns={size.columns} rows={size.rows} alt="read image" />
+  return <Image key={key} source={source} columns={size.columns} rows={size.rows} alt="read image" />
+}
+
+function shows(out: ReadImage | ReadPdf | undefined): out is ReadImage | ReadPdf {
+  return !!out && ['image', 'pdf', 'parts'].includes(out.type)
+}
+
+/** One Read under its head (the engine's row, or the file name under a folded group): the button, and when open the
+ *  picture or the PDF viewer. Open by itself outside tmux until the person folds it. */
+async function readBlock($: any, e: any, id: string, out: ReadImage | ReadPdf, head: unknown, key: string) {
+  const { Box, Button } = $.ui.resolve(e)
+  const terminal = e.surface === 'terminal'
+  const { value: chosen } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
+  const isOpen: boolean = chosen ?? (await opensItself($))
+  const { words } = await hostOf($)
+  const press = terminal ? () => void pressInTerminal($, id, out, isOpen) : () => void pressInApp($, id, out)
+  const row = (
+    <Box key={`row-${key}`} flexDirection="row" gap={1}>
+      {head}
+      <Button key={key} onPress={press}>{isOpen ? words.hide : 'show me'}</Button>
+    </Box>
+  )
+  if (!isOpen) return row
+  if (out.type === 'image') {
+    const picture = await readPicture($, e, id, out, key === 'show-me' ? 'read' : `read-${key}`)
+    if (!picture) startPreparing($, id, out)
+    return <Box key={`block-${key}`} flexDirection="column">{row}{picture}</Box>
+  }
+  const v = (await read($, views))[id]
+  if (!v) startPreparing($, id, out)
+  return v ? <Box key={`block-${key}`} flexDirection="column">{row}{await drawView($, e, id, v)}</Box> : row
 }
 
 // ---------------------------------------------------------------- hooks
@@ -703,31 +744,32 @@ export const register: Register = on => {
   on('ui.render', { component: 'ToolResult', props: { tool: 'Read' } }, async ($, e, next) => {
     const props = e.props as { output?: unknown; isErrored?: boolean }
     const out = props.output as ReadImage | ReadPdf | undefined
-    if (props.isErrored || !out || !['image', 'pdf', 'parts'].includes(out.type)) return next(e)
+    if (props.isErrored || !shows(out)) return next(e)
     if (await buttonsOff($)) return next(e)
-    const id = e.requestId
-    const own = await next(e)
-    const { Box, Button } = $.ui.resolve(e)
-    const terminal = e.surface === 'terminal'
-    const { value: chosen } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
-    const isOpen: boolean = chosen ?? (await opensItself($))
-    const { words } = await hostOf($)
-    const press = terminal ? () => void pressInTerminal($, id, out, isOpen) : () => void pressInApp($, id, out)
-    const row = (
-      <Box flexDirection="row" gap={1}>
-        {own}
-        <Button key="show-me" onPress={press}>{isOpen ? words.hide : 'show me'}</Button>
-      </Box>
-    )
-    if (!isOpen) return row
-    if (out.type === 'image') {
-      const picture = await readPicture($, e, id, out)
-      if (!picture) startPreparing($, id, out)
-      return <Box flexDirection="column">{row}{picture}</Box>
+    return readBlock($, e, e.requestId, out, await next(e), 'show-me')
+  })
+
+  // Reads in a row fold into one line (`Read 2 files`) and their own rows are never drawn: the pictures go under it.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const props = e.props as { calls?: ReadonlyArray<{ tool_use_id?: string; tool: string; input: unknown; isRunning: boolean; isErrored: boolean; output?: unknown }>; isExpanded?: boolean }
+    if (e.surface !== 'terminal' || props.isExpanded) return next(e)
+    const reads = (props.calls ?? []).filter(c => c.tool === 'Read' && c.tool_use_id && !c.isRunning && !c.isErrored && shows(c.output as ReadImage | ReadPdf | undefined))
+    if (!reads.length || !(await opensItself($))) return next(e)
+    for (const c of reads) {
+      const path = String((c.input as { file_path?: unknown })?.file_path ?? '')
+      if (path) remember(c.tool_use_id!, path)
     }
-    const v = (await read($, views))[id]
-    if (!v) startPreparing($, id, out)
-    return v ? <Box flexDirection="column">{row}{await drawView($, e, id, v)}</Box> : row
+    // Pictures up to GROUP_PICTURES; one PDF viewer at most, since two would share their buttons' names.
+    const pictures = reads.filter(c => (c.output as ReadImage | ReadPdf).type === 'image').slice(-GROUP_PICTURES)
+    const pdf = reads.filter(c => (c.output as ReadImage | ReadPdf).type !== 'image').at(-1)
+    const { Box, Text } = $.ui.resolve(e)
+    const own = await next(e)
+    const blocks = []
+    for (const [i, c] of [...pictures, ...(pdf ? [pdf] : [])].entries()) {
+      const name = (readPaths.get(c.tool_use_id!) ?? '').split('/').pop() || 'Read'
+      blocks.push(await readBlock($, e, c.tool_use_id!, c.output as ReadImage | ReadPdf, <Text dimColor>{name}</Text>, `show-me-${i}`))
+    }
+    return <Box flexDirection="column">{own}{blocks}</Box>
   })
 
   // Files Claude sends you show in the terminal too, open, each in its own viewer (the app shows its own file card).

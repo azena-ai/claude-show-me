@@ -100,7 +100,7 @@ test('outside tmux the terminal reads the picture file itself: no bytes cross', 
 })
 
 test('inside tmux the terminal reads the picture file itself too', async ($, on) => {
-  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : undefined }))
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : e.name === 'TERM_PROGRAM' ? 'tmux' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', () => ({ value: { base64: PNG } }))
   on('state.get', (_, e) =>
@@ -244,7 +244,7 @@ test('outside tmux a Read image opens by itself, with the button to fold it away
 })
 
 test('inside tmux a Read image stays a closed button: no blank box', async ($, on) => {
-  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : undefined }))
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : e.name === 'TERM_PROGRAM' ? 'tmux' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', () => ({ value: { base64: PNG } }))
   engineRow(on)
@@ -278,6 +278,41 @@ test('a file Claude sends you is drawn in the terminal under its card', async ($
   const failed = await $.ui.mount({ ...sent, surface: 'terminal', props: { ...sent.props, isErrored: true } })
   expect(await failed.find({ type: 'Image' })).toBeFalsy()
   await failed.unmount()
+})
+
+test('a TMUX handed down from the terminal does not count: a plain Ghostty tab opens pictures by itself', async ($, on) => {
+  on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : e.name === 'TERM_PROGRAM' ? 'ghostty' : undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('fs.read', () => ({ value: { base64: PNG } }))
+  engineRow(on)
+  on('store.get', () => ({ value: undefined }))
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  const ui = await $.ui.mount(READ_ROW('terminal'))
+  expect(await ui.find({ type: 'Image', key: 'read' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('reads folded into one line show their pictures under it, outside tmux', async ($, on) => {
+  stubHost(on)
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>Read 2 files</Text>
+  })
+  on('store.get', () => ({ value: undefined }))
+  on('state.get', () => ({ value: { value: undefined, version: 0 } }))
+  const image = { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 70, dimensions: { displayWidth: 800, displayHeight: 600 } } }
+  const call = (id: string, file: string, output: unknown) => ({ tool_use_id: id, tool: 'Read', input: { file_path: file }, isRunning: false, isErrored: false, isInterrupted: false, output })
+  const group = { plugin: 'show-me', component: 'ToolGroup', requestId: 'grp', surface: 'terminal',
+    props: { calls: [call('toolu_a', '/tmp/a.png', image), call('toolu_b', '/tmp/b.md', { type: 'text', file: { filePath: '/tmp/b.md' } }), call('toolu_c', '/tmp/c.png', image)], isActive: false, isExpanded: false } } as const
+  const ui = await $.ui.mount(group)
+  expect(await ui.find({ type: 'Text', text: /Read 2 files/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Image', key: 'read-show-me-0' })).toBeTruthy()
+  expect(await ui.find({ type: 'Image', key: 'read-show-me-1' })).toBeTruthy()
+  expect((await ui.find({ type: 'Text', text: /^c\.png$/ }))?.text).toBe('c.png')
+  await ui.unmount()
+  const open = await $.ui.mount({ ...group, props: { ...group.props, isExpanded: true } })
+  expect(await open.find({ type: 'Image' })).toBeFalsy()
+  await open.unmount()
 })
 
 test('pressed open in the terminal, the PNG Claude Code already holds is drawn', async ($, on) => {

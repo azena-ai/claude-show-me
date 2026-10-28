@@ -22,16 +22,20 @@ claude plugin install show-me --marketplace azena-ai/claude-show-me
 
 ## The “show me” button
 
-Whenever Claude reads an image or a PDF, Claude Code shows a line like `Read image (45KB)`. show-me puts a button right next to it:
+Whenever Claude reads an image or a PDF, you see it right away, small, without asking. Next to it is a button to fold it away:
 
 ```
-  ⎿  Read image (45KB)   [ show me ]
+  Read 2 files
+  chart.png [ hide ]
+  ┌──────────┐
+  │ picture  │
+  └──────────┘
+  offer.pdf [ hide ]   Page 1 of 12, ◀ ▶ and the page numbers
 ```
 
-Nothing runs until you press it, so it never slows the session down:
-
-- **In the terminal** the picture unfolds below the line (press again to fold it). A PNG is drawn straight from the bytes Claude Code already holds; other formats are converted once and the terminal reads the file itself. A PDF opens in the viewer, pages to turn.
-- **In the Claude app** the original file is sent to you as a file card, at full resolution.
+- **In the terminal** pictures open by themselves, also when Claude Code folds several reads into one line (`Read 3 files`). A PDF opens on page 1 at once; the other pages follow in the background. Files Claude sends you with SendUserFile show up the same way.
+- **Inside tmux** the button stays folded (`[ show me ]`): Claude Code's pictures came out as blank boxes there. Start Claude Code in a plain terminal tab to get pictures by themselves.
+- **In the Claude app** the button sends you the original file as a file card, at full resolution.
 
 Turn the button off or on with `/show-me buttons off` and `/show-me buttons on`.
 
@@ -49,7 +53,7 @@ Besides the button, Claude gets a tool, `show`, and you get a command, `/show-me
 
 Every viewer has **Hide** (folds the picture away, **Show** brings it back), **Open** (in the default app) and, on macOS, **Show in folder**.
 
-**Paging fast:** click the page numbers under the picture (`1 2 3 … 12`). Claude Code reads two quick clicks on the same spot, such as ▶ twice, as a double-click and drops the second, so the numbers are the quick way through a file. The page number moves at once; the picture follows as soon as you stop clicking. Outside tmux the terminal reads the picture file itself, and large PDF pages are reduced to 256 colours, so a page turn sends little.
+**Paging fast:** click the page numbers under the picture (`1 2 3 … 12`). Claude Code reads two quick clicks on the same spot, such as ▶ twice, as a double-click and drops the second, so the numbers are the quick way through a file. The page number moves at once; the picture follows as soon as you stop clicking. The terminal reads the picture file itself, so a page turn sends almost nothing; only over ssh do pictures travel as bytes (large PDF pages then go down to 256 colours).
 
 Ask for it in plain words:
 
