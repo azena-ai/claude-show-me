@@ -258,6 +258,9 @@ test('a file Claude sends you is drawn in the terminal under its card', async ($
   const app = await $.ui.mount({ ...sent, surface: 'mobile' })
   expect(await app.find({ type: 'Svg' })).toBeFalsy()
   await app.unmount()
+  const failed = await $.ui.mount({ ...sent, surface: 'terminal', props: { ...sent.props, isErrored: true } })
+  expect(await failed.find({ type: 'Image' })).toBeFalsy()
+  await failed.unmount()
 })
 
 test('pressed open in the terminal, the PNG Claude Code already holds is drawn', async ($, on) => {

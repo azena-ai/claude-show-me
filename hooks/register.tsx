@@ -704,6 +704,8 @@ export const register: Register = on => {
   // Files Claude sends you show in the terminal too, open, each in its own viewer (the app shows its own file card).
   on('tool.call', { tool: 'SendUserFile' }, async ($, e, next) => {
     const ran = await next(e)
+    // Denied or failed: nothing was sent, so nothing is drawn.
+    if ((ran as { isError?: boolean } | undefined)?.isError) return ran
     const files = ((e as { files?: unknown }).files as string[] | undefined) ?? []
     const shown = files.filter(f => IMAGE.test(f) || PDF.test(f) || VIDEO.test(f)).slice(0, SENT_SHOWN)
     if (shown.length && (await opensItself($))) {
@@ -715,7 +717,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'ToolResult', props: { tool: 'SendUserFile' } }, async ($, e, next) => {
-    if (e.surface !== 'terminal') return next(e)
+    if (e.surface !== 'terminal' || (e.props as { isErrored?: boolean }).isErrored) return next(e)
     const all = (await read($, views)) ?? {}
     const ids = Array.from({ length: SENT_SHOWN }, (_, i) => `${e.requestId}#${i}`).filter(id => all[id])
     if (!ids.length) return next(e)
