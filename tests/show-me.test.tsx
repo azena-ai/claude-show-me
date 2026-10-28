@@ -113,6 +113,23 @@ test('inside tmux the terminal reads the picture file itself too', async ($, on)
   await ui.unmount()
 })
 
+test('while the rest of a PDF is being made, page 1 draws and later pages say they are coming', async ($, on) => {
+  stubHost(on)
+  let page = 0
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: { ...VIEW, pending: true } } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: { toolu_1: { page, mode: 'after' } } }, version: 1 } },
+  )
+  for (const at of [0, 1]) {
+    page = at
+    const ui = await $.ui.mount(ROW('terminal'))
+    expect(Boolean(await ui.find({ type: 'Image' }))).toBe(at === 0)
+    expect(Boolean(await ui.find({ type: 'Text', text: /Preparing this page/ }))).toBe(at === 1)
+    await ui.unmount()
+  }
+})
+
 test('the picture stays a glance: at most 14 rows and 70 columns even in a tall, wide terminal', async ($, on) => {
   stubHost(on)
   on('state.get', (_, e) =>

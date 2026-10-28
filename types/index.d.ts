@@ -13,6 +13,8 @@ export type View = {
   before?: Page[]
   beforeSource?: string
   note?: string
+  /** A PDF whose pages after the first are still being made. */
+  pending?: boolean
 }
 
 export type Mode = 'after' | 'before' | 'both'

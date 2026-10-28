@@ -41,8 +41,8 @@ const DESCRIPTION = `Shows the person a file right in the chat, no browser neede
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
 
 const WORDS = {
-  en: { noImagesTmux: 'Pictures are off in this session: tmux did not pass them through when Claude Code started. Restart Claude Code in this window and they show. For every window: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'This terminal cannot draw pictures (Ghostty, kitty, WezTerm and iTerm2 can). Open shows the file.', page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', firstPages: 'first {n} to page through', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.' },
-  de: { noImagesTmux: 'Bilder sind in dieser Sitzung aus: tmux hat sie beim Start von Claude Code nicht durchgelassen. Claude Code in diesem Fenster neu starten, dann sind sie da. Für alle Fenster: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'Dieses Terminal kann keine Bilder zeigen (Ghostty, kitty, WezTerm und iTerm2 können es). Öffnen zeigt die Datei.', page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', firstPages: 'die ersten {n} zum Blättern', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.' },
+  en: { noImagesTmux: 'Pictures are off in this session: tmux did not pass them through when Claude Code started. Restart Claude Code in this window and they show. For every window: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'This terminal cannot draw pictures (Ghostty, kitty, WezTerm and iTerm2 can). Open shows the file.', page: 'Page', of: 'of', before: 'Before', after: 'After', both: 'Side by side', open: 'Open', reveal: 'Show in folder', sheet: 'Contact sheet', image: 'Image', desktop: 'Desktop', phone: 'Phone', usage: 'Usage: /show-me <path> [before=<path>] · /show-me buttons on|off', failed: 'Could not show it', hide: 'hide', collapse: 'Hide', expand: 'Show', firstPages: 'first {n} to page through', buttonsOn: 'The "show me" button is on.', buttonsOff: 'The "show me" button is off.', preparing: 'Preparing this page …' },
+  de: { noImagesTmux: 'Bilder sind in dieser Sitzung aus: tmux hat sie beim Start von Claude Code nicht durchgelassen. Claude Code in diesem Fenster neu starten, dann sind sie da. Für alle Fenster: set -g allow-passthrough on in ~/.tmux.conf', noImagesTerminal: 'Dieses Terminal kann keine Bilder zeigen (Ghostty, kitty, WezTerm und iTerm2 können es). Öffnen zeigt die Datei.', page: 'Seite', of: 'von', before: 'Vorher', after: 'Nachher', both: 'Nebeneinander', open: 'Öffnen', reveal: 'Im Ordner zeigen', sheet: 'Kontaktbogen', image: 'Bild', desktop: 'Desktop', phone: 'Handy', usage: 'Benutzung: /show-me <pfad> [before=<pfad>] · /show-me buttons on|off', failed: 'Konnte nicht zeigen', hide: 'zuklappen', collapse: 'Zuklappen', expand: 'Aufklappen', firstPages: 'die ersten {n} zum Blättern', buttonsOn: 'Der „show me“-Knopf ist an.', buttonsOff: 'Der „show me“-Knopf ist aus.', preparing: 'Seite wird vorbereitet …' },
 }
 type Words = (typeof WORDS)['en']
 
@@ -189,21 +189,45 @@ async function prepareImage($: any, source: string): Promise<Page[]> {
   return [await pageFromPicture($, source, await cacheDirFor($, source), 's1', words.image)]
 }
 
-async function preparePdf($: any, source: string): Promise<{ pages: Page[]; total: number }> {
-  const { words } = await hostOf($)
+async function preparePdf($: any, source: string): Promise<{ pages: Page[]; total: number; rest?: Promise<void> }> {
+  const { words, remote } = await hostOf($)
   const dir = await cacheDirFor($, source)
-  const info = await runOn($, ['pdfinfo', source])
+  const info = await runOn($, ['pdfinfo', '-f', '1', '-l', String(MAX_PDF_PAGES), source])
   if (info.code === 127) throw new Error('pdftoppm/pdfinfo (poppler) is not installed: brew install poppler')
   const total = Number((/Pages:\s+(\d+)/.exec(info.out) ?? [])[1] ?? '1')
   const last = Math.min(total, MAX_PDF_PAGES)
-  const listed = ((await $.fs.list(dir).catch(() => [])) as any[]).map(f => f.name)
-  if (!listed.some(n => /^s-\d+\.png$/.test(n))) {
-    // longest side 1200 px: sharp at full terminal width, a few hundred KB a page, so paging stays instant
-    await runOn($, ['pdftoppm', '-scale-to', String(PDF_EDGE), '-png', '-f', '1', '-l', String(last), source, `${dir}/s`], 240_000)
-    await runOn($, ['pdftoppm', '-jpeg', '-jpegopt', 'quality=55', '-scale-to', '560', '-f', '1', '-l', String(last), source, `${dir}/v`], 240_000)
+  // pdftoppm numbers its files with as many digits as the document has pages
+  const nrOf = (n: number) => String(n).padStart(String(total).length, '0')
+  const sizes = new Map([...info.out.matchAll(/Page\s+(\d+)\s+size:\s+([\d.]+)\s+x\s+([\d.]+)/g)].map(m => [Number(m[1]), [Number(m[2]), Number(m[3])]] as const))
+  const pages: Page[] = []
+  for (let n = 1; n <= last; n++) {
+    const [w, h] = sizes.get(n) ?? sizes.get(1) ?? [595, 842]
+    const scale = PDF_EDGE / Math.max(w, h)
+    pages.push({ png: `${dir}/s-${nrOf(n)}.png`, jpg: `${dir}/v-${nrOf(n)}.jpg`, w: Math.round(w * scale), h: Math.round(h * scale), name: `${words.page} ${n}` })
   }
-  const files = ((await $.fs.list(dir)) as any[]).map(f => f.name).filter(n => /^s-\d+\.png$/.test(n)).sort()
-  if (!listed.includes('palette.done')) {
+  const listed = ((await $.fs.list(dir).catch(() => [])) as any[]).map(f => f.name)
+  if (listed.includes('pages.done') || listed.includes('palette.done')) return { pages, total }
+  // Page 1 first, so the viewer opens at once (a 12-page PDF waited 3.9 s for all of them); the rest follows.
+  if (!listed.includes(`s-${nrOf(1)}.png`)) {
+    // longest side 1200 px: sharp at full terminal width, a few hundred KB a page
+    await runOn($, ['pdftoppm', '-scale-to', String(PDF_EDGE), '-png', '-f', '1', '-l', '1', source, `${dir}/s`], 240_000)
+  }
+  return { pages, total, rest: renderRest($, source, dir, last, remote) }
+}
+
+/** The pages after the first in three runs side by side, the small JPEGs for the app, and (over ssh only, where
+ *  pages cross as bytes) large pages down to 256 colours. Marks the folder done when all is there. */
+async function renderRest($: any, source: string, dir: string, last: number, remote: boolean): Promise<void> {
+  const runs: Promise<Run>[] = []
+  const step = Math.max(1, Math.ceil((last - 1) / 3))
+  for (let from = 2; from <= last; from += step) {
+    const to = Math.min(last, from + step - 1)
+    runs.push(runOn($, ['pdftoppm', '-scale-to', String(PDF_EDGE), '-png', '-f', String(from), '-l', String(to), source, `${dir}/s`], 240_000))
+  }
+  runs.push(runOn($, ['pdftoppm', '-jpeg', '-jpegopt', 'quality=55', '-scale-to', '560', '-f', '1', '-l', String(last), source, `${dir}/v`], 240_000))
+  await Promise.all(runs)
+  if (remote) {
+    const files = ((await $.fs.list(dir)) as any[]).map(f => f.name).filter(n => /^s-\d+\.png$/.test(n))
     for (const file of files) {
       const path = `${dir}/${file}`
       if ((await sizeOnDisk($, path)) <= PALETTE_ABOVE) continue
@@ -212,15 +236,8 @@ async function preparePdf($: any, source: string): Promise<{ pages: Page[]; tota
       if (r.code === 127) break // no ffmpeg: keep the pages as they are
       if (r.code === 0 && (await sizeOnDisk($, smaller)) > 0 && (await sizeOnDisk($, smaller)) < (await sizeOnDisk($, path))) await runOn($, ['mv', '-f', smaller, path])
     }
-    await $.fs.write(`${dir}/palette.done`, '')
   }
-  const pages: Page[] = []
-  for (const [i, file] of files.entries()) {
-    const nr = /s-(\d+)\.png$/.exec(file)![1]
-    const size = await pixelsOf($, `${dir}/${file}`)
-    pages.push({ png: `${dir}/${file}`, jpg: `${dir}/v-${nr}.jpg`, w: size.w, h: size.h, name: `${words.page} ${i + 1}` })
-  }
-  return { pages, total }
+  await $.fs.write(`${dir}/pages.done`, '')
 }
 
 async function prepareVideo($: any, source: string): Promise<Page[]> {
@@ -267,7 +284,7 @@ function kindOf(source: string): Kind | undefined {
   return undefined
 }
 
-async function prepareAny($: any, source: string): Promise<{ kind: Kind; pages: Page[]; total: number }> {
+async function prepareAny($: any, source: string): Promise<{ kind: Kind; pages: Page[]; total: number; rest?: Promise<void> }> {
   const kind = kindOf(source)
   if (!kind) throw new Error(`file type not supported: ${source}`)
   if (!URL_RE.test(source)) {
@@ -332,12 +349,20 @@ async function createView($: any, id: string, input: { file: string; before?: st
   const source = expandHome(input.file, home)
   const ready = await prepareAny($, source)
   const beforeSource = input.before ? expandHome(input.before, home) : undefined
-  const before = beforeSource ? (await prepareAny($, beforeSource)).pages : undefined
+  const old = beforeSource ? await prepareAny($, beforeSource) : undefined
+  const before = old?.pages
   const title = input.title?.trim() || source.split('/').pop() || source
+  const rest = [ready.rest, old?.rest].filter(Boolean)
   const view: View = {
     kind: ready.kind, title, source, pages: ready.pages, total: ready.total,
     ...(before && beforeSource ? { before, beforeSource } : {}),
     ...(input.note ? { note: input.note } : {}),
+    ...(rest.length ? { pending: true } : {}),
+  }
+  if (rest.length) {
+    void Promise.allSettled(rest).then(() =>
+      update($, views, all => (all?.[id] ? { ...all, [id]: { ...all[id]!, pending: false } } : all ?? {})),
+    )
   }
   await update($, views, all => {
     const next: Record<string, View> = { ...(all ?? {}), [id]: view }
@@ -501,6 +526,7 @@ async function drawView($: any, e: any, id: string, v: View) {
     const { remote } = await hostOf($)
     // The terminal reads the file itself, inside tmux too (pictures sent as bytes stayed blank in Ghostty+tmux, 28.10.).
     const picture = async (p: Page, maxColumns: number, key: string) => {
+      if (v.pending && p.png !== v.pages[0]?.png && p.png !== v.before?.[0]?.png) return <Text key={key} dimColor>{words.preparing}</Text>
       const source = remote ? { png: await bytesOf($, p.png) } : { file: p.png, format: 'png' as const }
       const size = fit(p.w, p.h, maxColumns, height)
       return <Image key={key} source={source} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
@@ -543,9 +569,12 @@ async function drawView($: any, e: any, id: string, v: View) {
     <Box flexDirection="column" gap={1}>
       <Text bold>{heading}</Text>
       {!hidden && <Box flexDirection="row" gap={1}>
-        {await Promise.all(shown.map(async (p, i) => (
-          <Svg source={await svgOf(p)} alt={`${v.title}${beside ? (i === 0 ? ` ${words.before}` : ` ${words.after}`) : ''}`} width={beside ? 300 : 620} />
-        )))}
+        {await Promise.all(shown.map(async (p, i) => {
+          const svg = await svgOf(p).catch(() => undefined) // the small JPEGs come with the rest of a PDF
+          return svg
+            ? <Svg source={svg} alt={`${v.title}${beside ? (i === 0 ? ` ${words.before}` : ` ${words.after}`) : ''}`} width={beside ? 300 : 620} />
+            : <Text dimColor>{words.preparing}</Text>
+        }))}
       </Box>}
       <Box flexDirection="row" gap={1}>{controls(Button, Text, false)}</Box>
       {v.note && <Text dimColor>{v.note}</Text>}
