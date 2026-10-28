@@ -99,7 +99,7 @@ test('outside tmux the terminal reads the picture file itself: no bytes cross', 
   await ui.unmount()
 })
 
-test('the picture stays small: at most 24 rows even in a tall, wide terminal', async ($, on) => {
+test('the picture stays a glance: at most 14 rows and 70 columns even in a tall, wide terminal', async ($, on) => {
   stubHost(on)
   on('state.get', (_, e) =>
     (e as { key: string }).key === 'views'
@@ -108,8 +108,8 @@ test('the picture stays small: at most 24 rows even in a tall, wide terminal', a
   )
   const ui = await $.ui.mount({ ...ROW('terminal'), viewport: { columns: 240, rows: 70 } })
   const image = await ui.find({ type: 'Image' })
-  expect(image?.props.rows).toBeLessThanOrEqual(24)
-  expect(image?.props.columns).toBeLessThanOrEqual(110)
+  expect(image?.props.rows).toBeLessThanOrEqual(14)
+  expect(image?.props.columns).toBeLessThanOrEqual(70)
   await ui.unmount()
 })
 

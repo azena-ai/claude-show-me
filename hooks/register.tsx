@@ -34,6 +34,7 @@ const MAX_VIEWS = 60
 const PNG_LIMIT = 1_900_000 // an Image takes at most 2 MiB
 const SVG_LIMIT = 120_000 // an Svg source takes at most 131,072 characters
 const CELL = 2.1 // a terminal cell is about 2.1 times as tall as it is wide
+const GLANCE = { columns: 70, rows: 14 } // a quick look beside the text, not a full screen
 
 const DESCRIPTION = `Shows the person a file right in the chat, no browser needed: an image, a PDF (every page, to page through), a video (contact sheet of 6 frames plus each frame), a web page or local HTML file (screenshot at desktop and phone size). With "before" (the path of the old version) it shows Before/After to switch between and side by side.
 Use it whenever you built, changed, rendered or found something visual (screenshot, render, PDF, slide, video, page) instead of only naming the path. The picture costs no tokens. Use absolute paths.`
@@ -492,9 +493,8 @@ async function drawView($: any, e: any, id: string, v: View) {
         </Box>
       )
     }
-    // A glance, not a full screen: at most 24 rows and 110 columns, the size of the Read button's picture.
-    const width = Math.max(20, Math.min(110, (e.viewport?.columns ?? 100) - 4))
-    const height = Math.max(8, Math.min(24, (e.viewport?.rows ?? 50) - 8))
+    const width = Math.max(20, Math.min(GLANCE.columns, (e.viewport?.columns ?? 100) - 4))
+    const height = Math.max(8, Math.min(GLANCE.rows, (e.viewport?.rows ?? 50) - 8))
     const { tmux } = await hostOf($)
     // Outside tmux the terminal reads the file itself, so no picture crosses the line; tmux passes bytes only.
     const picture = async (p: Page, maxColumns: number, key: string) => {
@@ -632,7 +632,7 @@ async function readPicture($: any, e: any, id: string, out: ReadImage) {
       source = { png: done.png }
     } else source = { file: done.file, format: 'png' } // the terminal reads the file itself
   } else return undefined
-  const size = fit(width, height, Math.min(90, Math.max(20, (e.viewport?.columns ?? 100) - 6)), 24)
+  const size = fit(width, height, Math.min(GLANCE.columns, Math.max(20, (e.viewport?.columns ?? 100) - 6)), GLANCE.rows)
   return <Image key="read" source={source} columns={size.columns} rows={size.rows} alt="read image" />
 }
 
