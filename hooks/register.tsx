@@ -28,6 +28,7 @@ const CHROMES = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 const MAX_PDF_PAGES = 60
 const PDF_EDGE = 1200
 const BYTES_KEPT = 48 // pictures held in memory for instant paging
+const SENT_SHOWN = 3 // files of one SendUserFile drawn in the terminal
 const SETTLE_MS = 280 // paging fast: the picture follows once the clicks pause
 const PALETTE_ABOVE = 200_000 // PDF pages larger than this go to 256 colours (about half the bytes)
 const MAX_VIEWS = 60
@@ -46,7 +47,7 @@ const WORDS = {
 type Words = (typeof WORDS)['en']
 
 type Run = { code: number; out: string; err: string }
-type Host = { mac: boolean; uid: number; tmux: boolean; words: Words; env: Record<string, string> }
+type Host = { mac: boolean; uid: number; tmux: boolean; remote: boolean; words: Words; env: Record<string, string> }
 
 // ---------------------------------------------------------------- the host
 
@@ -67,7 +68,9 @@ async function hostOf($: any): Promise<Host> {
     lang = r.stdout
   }
   const tmux = Boolean(await $.env.get('TMUX'))
-  hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, tmux, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
+  // Over ssh the terminal sits on another computer and cannot read our files: only then do pictures cross as bytes.
+  const remote = Boolean((await $.env.get('SSH_CONNECTION')) || (await $.env.get('SSH_TTY')))
+  hostFacts = { mac, uid: Number.isFinite(uid) && who.stdout.trim() !== '' ? uid : -1, tmux, remote, env, words: /^de/i.test(lang.trim()) ? WORDS.de : WORDS.en }
   return hostFacts
 }
 
@@ -495,14 +498,14 @@ async function drawView($: any, e: any, id: string, v: View) {
     }
     const width = Math.max(20, Math.min(GLANCE.columns, (e.viewport?.columns ?? 100) - 4))
     const height = Math.max(8, Math.min(GLANCE.rows, (e.viewport?.rows ?? 50) - 8))
-    const { tmux } = await hostOf($)
-    // Outside tmux the terminal reads the file itself, so no picture crosses the line; tmux passes bytes only.
+    const { remote } = await hostOf($)
+    // The terminal reads the file itself, inside tmux too (pictures sent as bytes stayed blank in Ghostty+tmux, 28.10.).
     const picture = async (p: Page, maxColumns: number, key: string) => {
-      const source = tmux ? { png: await bytesOf($, p.png) } : { file: p.png, format: 'png' as const }
+      const source = remote ? { png: await bytesOf($, p.png) } : { file: p.png, format: 'png' as const }
       const size = fit(p.w, p.h, maxColumns, height)
       return <Image key={key} source={source} columns={size.columns} rows={size.rows} alt={`${v.title}: ${p.name}`} />
     }
-    if (tmux && !hidden && list.length > 1) {
+    if (remote && !hidden && list.length > 1) {
       const around = [list[(nr + 1) % list.length]!, list[(nr - 1 + list.length) % list.length]!, list[(nr + 2) % list.length]!]
       preloadAround($, [...around.map(p => p.png), ...(v.before && v.before[nr] ? [v.before[nr]!.png] : [])])
     }
@@ -593,20 +596,39 @@ async function pressInApp($: any, id: string, out: ReadImage | ReadPdf) {
   await $.tool.call({ tool: 'SendUserFile', files: [file], status: 'normal', display: 'render', caption: file.split('/').pop() })
 }
 
-async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf) {
-  const { value: isOpen = false } = await $.state.get({ ...OPEN, id })
-  if (!isOpen) {
-    if (out.type === 'image' && out.file.type !== 'image/png' && !converted.has(id)) {
-      const source = await readSource($, id, out)
-      const dir = await cacheDirFor($, source)
-      const page = await pageFromPicture($, source, dir, 'read', '')
-      converted.set(id, { file: page.png, w: page.w, h: page.h })
-    }
-    if (out.type !== 'image' && !(await read($, views))[id]) {
-      await createView($, id, { file: out.file.filePath, title: out.file.filePath.split('/').pop() })
-    }
+/** What an open Read row needs before it can draw: a PNG for other picture formats, the viewer for a PDF. */
+async function prepareRead($: any, id: string, out: ReadImage | ReadPdf) {
+  if (out.type === 'image' && out.file.type !== 'image/png' && !converted.has(id)) {
+    const source = await readSource($, id, out)
+    const dir = await cacheDirFor($, source)
+    const page = await pageFromPicture($, source, dir, 'read', '')
+    converted.set(id, { file: page.png, w: page.w, h: page.h })
   }
-  await update($, { ...OPEN, id }, (v: boolean | undefined) => !v)
+  if (out.type !== 'image' && !(await read($, views))[id]) {
+    await createView($, id, { file: out.file.filePath, title: out.file.filePath.split('/').pop() })
+  }
+}
+
+async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf, isOpen: boolean) {
+  if (!isOpen) await prepareRead($, id, out)
+  await update($, { ...OPEN, id }, () => !isOpen)
+}
+
+// Rows opening by themselves whose picture is still being made: made once, then drawn again.
+const preparing = new Set<string>()
+
+/** Pictures open by themselves wherever the terminal draws them: not in tmux (blank boxes there), not with the buttons off. */
+async function opensItself($: any): Promise<boolean> {
+  return !(await hostOf($)).tmux && !(await buttonsOff($))
+}
+
+/** Makes the picture of a row that opened by itself, in the background; storing the choice draws the row again. */
+function startPreparing($: any, id: string, out: ReadImage | ReadPdf) {
+  if (preparing.has(id)) return
+  preparing.add(id)
+  void prepareRead($, id, out)
+    .then(() => update($, { ...OPEN, id }, () => true))
+    .catch(() => undefined)
 }
 
 async function readPicture($: any, e: any, id: string, out: ReadImage) {
@@ -616,18 +638,21 @@ async function readPicture($: any, e: any, id: string, out: ReadImage) {
     const { words } = await hostOf($)
     return <Text dimColor>{imagesOff === 'tmux' ? words.noImagesTmux : words.noImagesTerminal}</Text>
   }
-  const inTmux = Boolean(await $.env.get('TMUX'))
+  const { remote } = await hostOf($)
   const d = out.file.dimensions ?? {}
   let width = d.displayWidth ?? d.originalWidth ?? 1200
   let height = d.displayHeight ?? d.originalHeight ?? 800
   let source: Record<string, unknown>
   const done = converted.get(id)
-  if (out.file.type === 'image/png' && out.file.base64.length * 0.75 <= 2_000_000) {
+  const known = readPaths.get(id)
+  if (out.file.type === 'image/png' && known && !remote) {
+    source = { file: known, format: 'png' } // the terminal reads the file itself
+  } else if (out.file.type === 'image/png' && out.file.base64.length * 0.75 <= 2_000_000) {
     source = { png: out.file.base64 } // already in memory: nothing read, nothing converted
   } else if (done) {
     width = done.w
     height = done.h
-    if (inTmux) {
+    if (remote) {
       done.png ??= (await $.fs.read(done.file, { as: 'bytes' })).base64
       source = { png: done.png }
     } else source = { file: done.file, format: 'png' } // the terminal reads the file itself
@@ -655,9 +680,10 @@ export const register: Register = on => {
     const own = await next(e)
     const { Box, Button } = $.ui.resolve(e)
     const terminal = e.surface === 'terminal'
-    const { value: isOpen = false } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
+    const { value: chosen } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
+    const isOpen: boolean = chosen ?? (await opensItself($))
     const { words } = await hostOf($)
-    const press = terminal ? () => void pressInTerminal($, id, out) : () => void pressInApp($, id, out)
+    const press = terminal ? () => void pressInTerminal($, id, out, isOpen) : () => void pressInApp($, id, out)
     const row = (
       <Box flexDirection="row" gap={1}>
         {own}
@@ -667,10 +693,35 @@ export const register: Register = on => {
     if (!isOpen) return row
     if (out.type === 'image') {
       const picture = await readPicture($, e, id, out)
+      if (!picture) startPreparing($, id, out)
       return <Box flexDirection="column">{row}{picture}</Box>
     }
     const v = (await read($, views))[id]
+    if (!v) startPreparing($, id, out)
     return v ? <Box flexDirection="column">{row}{await drawView($, e, id, v)}</Box> : row
+  })
+
+  // Files Claude sends you show in the terminal too, open, each in its own viewer (the app shows its own file card).
+  on('tool.call', { tool: 'SendUserFile' }, async ($, e, next) => {
+    const ran = await next(e)
+    const files = ((e as { files?: unknown }).files as string[] | undefined) ?? []
+    const shown = files.filter(f => IMAGE.test(f) || PDF.test(f) || VIDEO.test(f)).slice(0, SENT_SHOWN)
+    if (shown.length && (await opensItself($))) {
+      void (async () => {
+        for (const [i, file] of shown.entries()) await createView($, `${e.tool_use_id}#${i}`, { file }).catch(() => undefined)
+      })()
+    }
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('ui.render', { component: 'ToolResult', props: { tool: 'SendUserFile' } }, async ($, e, next) => {
+    if (e.surface !== 'terminal') return next(e)
+    const all = (await read($, views)) ?? {}
+    const ids = Array.from({ length: SENT_SHOWN }, (_, i) => `${e.requestId}#${i}`).filter(id => all[id])
+    if (!ids.length) return next(e)
+    const own = await next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box flexDirection="column">{own}{await Promise.all(ids.map(id => drawView($, e, id, all[id]!)))}</Box>
   })
 
   on('session.start', async ($, e, next) => {
