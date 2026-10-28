@@ -99,6 +99,20 @@ test('outside tmux the terminal reads the picture file itself: no bytes cross', 
   await ui.unmount()
 })
 
+test('the picture stays small: at most 24 rows even in a tall, wide terminal', async ($, on) => {
+  stubHost(on)
+  on('state.get', (_, e) =>
+    (e as { key: string }).key === 'views'
+      ? { value: { value: { shape: 'views-1', value: { toolu_1: { ...VIEW, pages: [{ ...VIEW.pages[0]!, w: 2400, h: 1040 }] } } }, version: 1 } }
+      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
+  )
+  const ui = await $.ui.mount({ ...ROW('terminal'), viewport: { columns: 240, rows: 70 } })
+  const image = await ui.find({ type: 'Image' })
+  expect(image?.props.rows).toBeLessThanOrEqual(24)
+  expect(image?.props.columns).toBeLessThanOrEqual(110)
+  await ui.unmount()
+})
+
 test('clicking fast moves the page number at once and draws the last page when the clicks pause', async ($, on) => {
   let pos: Record<string, unknown> = {}
   let version = 1

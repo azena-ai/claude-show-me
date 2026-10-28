@@ -492,8 +492,9 @@ async function drawView($: any, e: any, id: string, v: View) {
         </Box>
       )
     }
-    const width = Math.max(20, (e.viewport?.columns ?? 100) - 4)
-    const height = Math.max(8, Math.min(48, (e.viewport?.rows ?? 50) - 8))
+    // A glance, not a full screen: at most 24 rows and 110 columns, the size of the Read button's picture.
+    const width = Math.max(20, Math.min(110, (e.viewport?.columns ?? 100) - 4))
+    const height = Math.max(8, Math.min(24, (e.viewport?.rows ?? 50) - 8))
     const { tmux } = await hostOf($)
     // Outside tmux the terminal reads the file itself, so no picture crosses the line; tmux passes bytes only.
     const picture = async (p: Page, maxColumns: number, key: string) => {
