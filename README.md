@@ -4,7 +4,7 @@
 
 <p align="center">Say “show me”. Claude shows its work right in the chat:<br>images, PDFs you can page through, video contact sheets, web page screenshots and before/after.<br>In the terminal and in the Claude app.</p>
 
-<p align="center"><a href="docs/show-me.mp4"><img src="docs/show-me.gif" width="800" alt="Claude reads a picture, a PDF, a clip, a web page and a before/after, and each one opens right in the Claude Code terminal"></a><br><sub><a href="docs/show-me.mp4">▶ Watch the film (43 s)</a></sub></p>
+<p align="center"><a href="https://cdn.jsdelivr.net/gh/azena-ai/claude-show-me@86f4498/docs/show-me.mp4"><img src="docs/show-me.gif" width="800" alt="Claude reads a picture, a PDF, a clip, a web page and a before/after, and each one opens right in the Claude Code terminal"></a><br><sub><a href="https://cdn.jsdelivr.net/gh/azena-ai/claude-show-me@86f4498/docs/show-me.mp4">▶ Watch the film (43 s)</a></sub></p>
 
 ## Install
 
