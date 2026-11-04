@@ -16,7 +16,9 @@ import type { Kind, Mode, Page, Position, Screen, View } from '../types'
 const TOOL = 'mcp__show-me__show'
 const MARK = 'show-me:'
 const views = atom({ plugin: 'show-me', key: 'views' } as const, {}, { shape: 'views-1' })
-const positions = atom({ plugin: 'show-me', key: 'positions' } as const, {}, { shape: 'positions-1' })
+// One position per viewer: a click writes only its own, so only that viewer is drawn again (a shared map redrew every
+// viewer of the session on every click).
+const POSITION = { plugin: 'show-me', key: 'position' } as const
 const screen = atom({ plugin: 'show-me', key: 'screen' } as const, {} as Screen, { shape: 'screen-1' })
 
 const IMAGE = /\.(png|jpe?g|webp|gif|heic|heif|tiff?|bmp|avif)$/i
@@ -434,9 +436,10 @@ function preloadAround($: any, paths: string[]) {
   })()
 }
 
-async function drawView($: any, e: any, id: string, v: View) {
+/** `prefix` keeps the keys of several viewers in one row apart (a surface cannot tell two Buttons with one key apart). */
+async function drawView($: any, e: any, id: string, v: View, prefix = '') {
   const { words, mac } = await hostOf($)
-  const at: Position = (await read($, positions))[id] ?? { page: 0, mode: 'after' }
+  const at: Position = (await $.state.get({ ...POSITION, id })).value ?? { page: 0, mode: 'after' }
   const list = at.mode === 'before' && v.before ? v.before : v.pages
   const nr = Math.min(Math.max(0, at.page), list.length - 1)
   // The picture shows `shown` while a burst of clicks is still running, so the page number moves at once and
@@ -446,25 +449,21 @@ async function drawView($: any, e: any, id: string, v: View) {
   const shownPage = list[shownNr]!
   const afterPage = v.pages[Math.min(shownNr, v.pages.length - 1)]!
   const beside = at.mode === 'both' && v.before ? v.before[Math.min(shownNr, v.before.length - 1)]! : undefined
-  const setMode = (mode: Mode) => () =>
-    update($, positions, all => ({ ...(all ?? {}), [id]: { ...(all?.[id] ?? at), mode } }))
+  const setMode = (mode: Mode) => () => update($, { ...POSITION, id }, now => ({ ...(now ?? at), mode }))
   const settle = (burst: number) => () => {
     if (pagingBursts.get(id) !== burst) return // a newer click restarted the wait
     pagingBursts.delete(id)
-    void update($, positions, all => {
-      const now = all?.[id] ?? at
-      return { ...(all ?? {}), [id]: { ...now, shown: now.page } }
-    })
+    void update($, { ...POSITION, id }, now => ({ ...(now ?? at), shown: (now ?? at).page }))
   }
   const go = (target: (now: Position) => number) => async () => {
     const inBurst = pagingBursts.has(id)
     const burst = (pagingBursts.get(id) ?? 0) + 1
     pagingBursts.set(id, burst)
-    await update($, positions, all => {
-      const now = all?.[id] ?? at
+    await update($, { ...POSITION, id }, held => {
+      const now = held ?? at
       const next = target(now)
       // the first click of a burst shows its page right away; later clicks only move the number
-      return { ...(all ?? {}), [id]: { ...now, page: next, shown: inBurst ? (now.shown ?? now.page) : next } }
+      return { ...now, page: next, shown: inBurst ? (now.shown ?? now.page) : next }
     })
     try {
       $.clock.after(SETTLE_MS, settle(burst))
@@ -474,11 +473,7 @@ async function drawView($: any, e: any, id: string, v: View) {
   }
   const turn = (step: number) => go(now => (now.page + step + list.length) % list.length)
   const jump = (to: number) => go(() => to)
-  const fold = () =>
-    update($, positions, all => {
-      const now = all?.[id] ?? at
-      return { ...(all ?? {}), [id]: { ...now, hidden: !(now.hidden ?? false) } }
-    })
+  const fold = () => update($, { ...POSITION, id }, now => ({ ...(now ?? at), hidden: !((now ?? at).hidden ?? false) }))
   const hidden = at.hidden ?? false
   const launch = (argv: string[]) => () => void runOn($, argv, 10_000)
   const openArgv = mac ? ['open', v.source] : ['xdg-open', v.source]
@@ -497,22 +492,22 @@ async function drawView($: any, e: any, id: string, v: View) {
       if (k > 0 && i - wanted[k - 1]! > 1) parts.push(<Text dimColor>…</Text>)
       parts.push(i === nr
         ? <Text bold inverse>{` ${i + 1} `}</Text>
-        : <Button key={`page-${i + 1}`} plain onPress={jump(i)}>{` ${i + 1} `}</Button>)
+        : <Button key={`${prefix}page-${i + 1}`} plain onPress={jump(i)}>{` ${i + 1} `}</Button>)
     })
     return parts
   }
 
   // Folded away, the row keeps its heading and the buttons that need no picture: Show, Open, Show in folder.
   const controls = (Button: any, Text: any, withOpen: boolean) => [
-    !hidden && list.length > 1 && <Button key="prev" onPress={turn(-1)}>◀</Button>,
+    !hidden && list.length > 1 && <Button key={`${prefix}prev`} onPress={turn(-1)}>◀</Button>,
     !hidden && list.length > 1 && <Text dimColor>{`${nr + 1}/${list.length}`}</Text>,
-    !hidden && list.length > 1 && <Button key="next" onPress={turn(1)}>▶</Button>,
-    !hidden && v.before && <Button key="mode-before" variant={at.mode === 'before' ? 'primary' : undefined} onPress={setMode('before')}>{words.before}</Button>,
-    !hidden && v.before && <Button key="mode-after" variant={at.mode === 'after' ? 'primary' : undefined} onPress={setMode('after')}>{words.after}</Button>,
-    !hidden && v.before && <Button key="mode-both" variant={at.mode === 'both' ? 'primary' : undefined} onPress={setMode('both')}>{words.both}</Button>,
-    withOpen && <Button key="open" onPress={launch(openArgv)}>{words.open}</Button>,
-    withOpen && mac && !URL_RE.test(v.source) && <Button key="reveal" onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>,
-    <Button key="fold" onPress={fold}>{hidden ? words.expand : words.collapse}</Button>,
+    !hidden && list.length > 1 && <Button key={`${prefix}next`} onPress={turn(1)}>▶</Button>,
+    !hidden && v.before && <Button key={`${prefix}mode-before`} variant={at.mode === 'before' ? 'primary' : undefined} onPress={setMode('before')}>{words.before}</Button>,
+    !hidden && v.before && <Button key={`${prefix}mode-after`} variant={at.mode === 'after' ? 'primary' : undefined} onPress={setMode('after')}>{words.after}</Button>,
+    !hidden && v.before && <Button key={`${prefix}mode-both`} variant={at.mode === 'both' ? 'primary' : undefined} onPress={setMode('both')}>{words.both}</Button>,
+    withOpen && <Button key={`${prefix}open`} onPress={launch(openArgv)}>{words.open}</Button>,
+    withOpen && mac && !URL_RE.test(v.source) && <Button key={`${prefix}reveal`} onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>,
+    <Button key={`${prefix}fold`} onPress={fold}>{hidden ? words.expand : words.collapse}</Button>,
   ]
 
   if (e.surface === 'terminal') {
@@ -525,8 +520,8 @@ async function drawView($: any, e: any, id: string, v: View) {
           <Text bold>{heading}</Text>
           <Text dimColor>{imagesOff === 'tmux' ? words.noImagesTmux : words.noImagesTerminal}</Text>
           <Box flexDirection="row" gap={1}>
-            <Button key="open" variant="primary" onPress={launch(openArgv)}>{words.open}</Button>
-            {mac && !URL_RE.test(v.source) && <Button key="reveal" onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>}
+            <Button key={`${prefix}open`} variant="primary" onPress={launch(openArgv)}>{words.open}</Button>
+            {mac && !URL_RE.test(v.source) && <Button key={`${prefix}reveal`} onPress={launch(['open', '-R', v.source])}>{words.reveal}</Button>}
           </Box>
           {v.note && <Text dimColor>{v.note}</Text>}
         </Box>
@@ -536,7 +531,8 @@ async function drawView($: any, e: any, id: string, v: View) {
     const height = Math.max(8, Math.min(GLANCE.rows, (e.viewport?.rows ?? 50) - 8))
     const { remote } = await hostOf($)
     // The terminal reads the file itself, inside tmux too (pictures sent as bytes stayed blank in Ghostty+tmux, 28.10.).
-    const picture = async (p: Page, maxColumns: number, key: string) => {
+    const picture = async (p: Page, maxColumns: number, name: string) => {
+      const key = `${prefix}${name}`
       if (v.pending && p.png !== v.pages[0]?.png && p.png !== v.before?.[0]?.png) return <Text key={key} dimColor>{words.preparing}</Text>
       const source = remote ? { png: await bytesOf($, p.png) } : { file: p.png, format: 'png' as const }
       const size = fit(p.w, p.h, maxColumns, height)
@@ -649,9 +645,11 @@ async function prepareRead($: any, id: string, out: ReadImage | ReadPdf) {
   }
 }
 
-async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf, isOpen: boolean) {
+/** Reads where the row stands at the press, not where it stood when drawn: a second press before the redraw toggles back. */
+async function pressInTerminal($: any, id: string, out: ReadImage | ReadPdf) {
+  const isOpen: boolean = (await $.state.get({ ...OPEN, id })).value ?? (await opensItself($))
   if (!isOpen) await prepareRead($, id, out)
-  await update($, { ...OPEN, id }, () => !isOpen)
+  await update($, { ...OPEN, id }, now => !(now ?? isOpen))
 }
 
 // Rows opening by themselves whose picture is still being made: made once, then drawn again.
@@ -667,7 +665,7 @@ function startPreparing($: any, id: string, out: ReadImage | ReadPdf) {
   if (preparing.has(id)) return
   preparing.add(id)
   void prepareRead($, id, out)
-    .then(() => update($, { ...OPEN, id }, () => true))
+    .then(() => update($, { ...OPEN, id }, now => now ?? true))
     .catch(() => undefined)
 }
 
@@ -713,7 +711,7 @@ async function readBlock($: any, e: any, id: string, out: ReadImage | ReadPdf, h
   const { value: chosen } = terminal ? await $.state.get({ ...OPEN, id }) : { value: false }
   const isOpen: boolean = chosen ?? (await opensItself($))
   const { words } = await hostOf($)
-  const press = terminal ? () => void pressInTerminal($, id, out, isOpen) : () => void pressInApp($, id, out)
+  const press = terminal ? () => void pressInTerminal($, id, out) : () => void pressInApp($, id, out)
   const row = (
     <Box key={`row-${key}`} flexDirection="row" gap={1}>
       {head}
@@ -794,7 +792,7 @@ export const register: Register = on => {
     if (!ids.length) return next(e)
     const own = await next(e)
     const { Box } = $.ui.resolve(e)
-    return <Box flexDirection="column">{own}{await Promise.all(ids.map(id => drawView($, e, id, all[id]!)))}</Box>
+    return <Box flexDirection="column">{own}{await Promise.all(ids.map((id, i) => drawView($, e, id, all[id]!, ids.length > 1 ? `f${i + 1}-` : '')))}</Box>
   })
 
   on('session.start', async ($, e, next) => {

@@ -25,13 +25,20 @@ function stubHost(on: any) {
   on('fs.read', () => ({ value: { base64: PNG } }))
 }
 
+/** The plugin's state as the engine holds it: views and screen as shaped atoms, one position per viewer id. */
+function stubState(on: any, now: () => { views?: Record<string, unknown>; pos?: Record<string, unknown>; screen?: unknown }) {
+  on('state.get', (_: unknown, e: { key: string; id?: string }) => {
+    const s = now()
+    if (e.key === 'views') return { value: { value: { shape: 'views-1', value: s.views ?? {} }, version: 1 } }
+    if (e.key === 'screen') return { value: { value: { shape: 'screen-1', value: s.screen ?? {} }, version: 1 } }
+    if (e.key === 'position') return { value: { value: s.pos?.[e.id ?? ''], version: 1 } }
+    return { value: { value: undefined, version: 0 } }
+  })
+}
+
 test('a PDF viewer shows its title, page, paging and before/after on every surface', async ($, on) => {
   stubHost(on)
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: {} }))
   for (const surface of ['terminal', 'mobile', 'desktop'] as const) {
     const ui = await $.ui.mount(ROW(surface))
     const heading = await ui.find({ type: 'Text', text: /Offer\.pdf/ })
@@ -45,11 +52,7 @@ test('a PDF viewer shows its title, page, paging and before/after on every surfa
 test('Hide folds the picture away and leaves heading, Show and Open; unfolded it draws again', async ($, on) => {
   stubHost(on)
   let hidden = true // the stub below reads it; hooks beneath are registered before the first $ call
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: { toolu_1: { page: 0, mode: 'after', hidden } } }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: { toolu_1: { page: 0, mode: 'after', hidden } } }))
   for (const fold of [true, false]) {
     hidden = fold
     for (const surface of ['terminal', 'mobile'] as const) {
@@ -69,11 +72,7 @@ test('over ssh a page is read once, kept in memory, and the next page is read ah
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'SSH_CONNECTION' ? '10.0.0.2 50000 10.0.0.1 22' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', (_: unknown, e: { path: string }) => { reads.push(e.path); return { value: { base64: PNG } } })
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: {} }))
   const ui = await $.ui.mount(ROW('terminal'))
   await ui.redraw()
   expect(reads.filter(p => p === '/tmp/p-1.png').length).toBe(1)
@@ -87,11 +86,7 @@ test('outside tmux the terminal reads the picture file itself: no bytes cross', 
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', (_: unknown, e: { path: string }) => { reads.push(e.path); return { value: { base64: PNG } } })
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: {} }))
   const ui = await $.ui.mount(ROW('terminal'))
   const image = await ui.find({ type: 'Image' })
   expect((image?.props.source as { file?: string }).file).toBe('/tmp/p-1.png')
@@ -103,11 +98,7 @@ test('inside tmux the terminal reads the picture file itself too', async ($, on)
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'LANG' ? 'en_US.UTF-8' : e.name === 'TMUX' ? '/tmp/tmux-501/default,1,0' : e.name === 'TERM_PROGRAM' ? 'tmux' : undefined }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'Darwin', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.read', () => ({ value: { base64: PNG } }))
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: {} }))
   const ui = await $.ui.mount(ROW('terminal'))
   expect(((await ui.find({ type: 'Image' }))?.props.source as { file?: string }).file).toBe('/tmp/p-1.png')
   await ui.unmount()
@@ -116,11 +107,7 @@ test('inside tmux the terminal reads the picture file itself too', async ($, on)
 test('while the rest of a PDF is being made, page 1 draws and later pages say they are coming', async ($, on) => {
   stubHost(on)
   let page = 0
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: { ...VIEW, pending: true } } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: { toolu_1: { page, mode: 'after' } } }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: { ...VIEW, pending: true } }, pos: { toolu_1: { page, mode: 'after' } } }))
   for (const at of [0, 1]) {
     page = at
     const ui = await $.ui.mount(ROW('terminal'))
@@ -132,11 +119,7 @@ test('while the rest of a PDF is being made, page 1 draws and later pages say th
 
 test('the picture stays a glance: at most 14 rows and 70 columns even in a tall, wide terminal', async ($, on) => {
   stubHost(on)
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: { ...VIEW, pages: [{ ...VIEW.pages[0]!, w: 2400, h: 1040 }] } } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { toolu_1: { ...VIEW, pages: [{ ...VIEW.pages[0]!, w: 2400, h: 1040 }] } }, pos: {} }))
   const ui = await $.ui.mount({ ...ROW('terminal'), viewport: { columns: 240, rows: 70 } })
   const image = await ui.find({ type: 'Image' })
   expect(image?.props.rows).toBeLessThanOrEqual(14)
@@ -149,12 +132,8 @@ test('clicking fast moves the page number at once and draws the last page when t
   let version = 1
   const timers: Array<() => void> = []
   stubHost(on)
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: pos }, version } },
-  )
-  on('state.set', (_, e) => { pos = ((e as any).value?.value ?? {}) as Record<string, unknown>; version += 1; return { value: { isSet: true, version } } })
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: pos }))
+  on('state.set', (_, e) => { const w = e as any; if (w.key === 'position') pos = { ...pos, [w.id]: w.value }; version += 1; return { value: { isSet: true, version } } })
   on('clock.after', (_: unknown, e: any) => { if (typeof e?.fn === 'function') timers.push(e.fn); return { value: { cancel: () => undefined } } })
   const ui = await $.ui.mount(ROW('terminal'))
   const pictureOf = async () => ((await ui.find({ type: 'Image' }))?.props.source as { file?: string; png?: string })
@@ -174,12 +153,8 @@ test('the page strip jumps straight to a page', async ($, on) => {
   let pos: Record<string, unknown> = {}
   let version = 1
   stubHost(on)
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: pos }, version } },
-  )
-  on('state.set', (_, e) => { pos = ((e as any).value?.value ?? {}) as Record<string, unknown>; version += 1; return { value: { isSet: true, version } } })
+  stubState(on, () => ({ views: { toolu_1: VIEW }, pos: pos }))
+  on('state.set', (_, e) => { const w = e as any; if (w.key === 'position') pos = { ...pos, [w.id]: w.value }; version += 1; return { value: { isSet: true, version } } })
   const ui = await $.ui.mount(ROW('terminal'))
   expect(await ui.find({ type: 'Button', key: 'page-3' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'page-1' })).toBeFalsy() // the page on screen is a label, not a button
@@ -262,11 +237,7 @@ test('a file Claude sends you is drawn in the terminal under its card', async ($
     const { Text } = $.ui.resolve(e)
     return <Text>Sent Offer.pdf</Text>
   })
-  on('state.get', (_, e) =>
-    (e as { key: string }).key === 'views'
-      ? { value: { value: { shape: 'views-1', value: { 'toolu_send#0': VIEW } }, version: 1 } }
-      : { value: { value: { shape: 'positions-1', value: {} }, version: 1 } },
-  )
+  stubState(on, () => ({ views: { 'toolu_send#0': VIEW }, pos: {} }))
   const sent = { plugin: 'show-me', component: 'ToolResult', requestId: 'toolu_send', props: { tool_use_id: 'toolu_send', tool: 'SendUserFile', isErrored: false, output: 'ok' } } as const
   const ui = await $.ui.mount({ ...sent, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Sent Offer/ })).toBeTruthy()
@@ -336,12 +307,7 @@ test('a text Read is left to the engine', async ($, on) => {
 
 test('where the session draws no pictures (tmux without passthrough at start), the viewer says why and offers Open', async ($, on) => {
   stubHost(on)
-  on('state.get', (_, e) => {
-    const key = (e as { key: string }).key
-    if (key === 'views') return { value: { value: { shape: 'views-1', value: { toolu_1: VIEW } }, version: 1 } }
-    if (key === 'screen') return { value: { value: { shape: 'screen-1', value: { imagesOff: 'tmux' } }, version: 1 } }
-    return { value: { value: { shape: 'positions-1', value: {} }, version: 1 } }
-  })
+  stubState(on, () => ({ views: { toolu_1: VIEW }, screen: { imagesOff: 'tmux' } }))
   const ui = await $.ui.mount(ROW('terminal'))
   expect(await ui.find({ type: 'Image' })).toBeFalsy()
   expect((await ui.find({ type: 'Text', text: /allow-passthrough/ }))?.text).toContain('Restart Claude Code')
@@ -351,4 +317,44 @@ test('where the session draws no pictures (tmux without passthrough at start), t
   const app = await $.ui.mount(ROW('mobile'))
   expect(await app.find({ type: 'Svg' })).toBeTruthy()
   await app.unmount()
+})
+
+const viewOf = (name: string) => ({
+  ...VIEW, title: `${name}.pdf`, source: `/tmp/${name}.pdf`, before: undefined, beforeSource: undefined,
+  pages: VIEW.pages.map((p, i) => ({ ...p, png: `/tmp/${name}-${i + 1}.png` })),
+})
+
+test('two files sent at once each get their own viewer; Hide under the second folds only the second', async ($, on) => {
+  let pos: Record<string, any> = {}
+  let version = 1
+  stubHost(on)
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>Sent 2 files</Text>
+  })
+  stubState(on, () => ({ views: { 'toolu_send#0': viewOf('A'), 'toolu_send#1': viewOf('B') }, pos }))
+  on('state.set', (_, e) => { const w = e as any; if (w.key === 'position') pos = { ...pos, [w.id]: w.value }; version += 1; return { value: { isSet: true, version } } })
+  const ui = await $.ui.mount({ plugin: 'show-me', component: 'ToolResult', requestId: 'toolu_send', surface: 'terminal', props: { tool_use_id: 'toolu_send', tool: 'SendUserFile', isErrored: false, output: 'ok' } } as const)
+  expect((await ui.findAll({ type: 'Image' })).map(i => (i.props.source as { file?: string }).file)).toEqual(['/tmp/A-1.png', '/tmp/B-1.png'])
+  expect(await ui.find({ type: 'Button', key: 'f1-fold' })).toBeTruthy()
+  await ui.press({ key: 'f2-fold' })
+  expect(pos['toolu_send#1']?.hidden).toBe(true)
+  expect(pos['toolu_send#0']?.hidden).toBeUndefined()
+  await ui.press({ key: 'f1-next' })
+  expect(pos['toolu_send#0']?.page).toBe(1)
+  await ui.unmount()
+})
+
+test('a page turn writes only its own viewer, so no other viewer of the session is drawn again', async ($, on) => {
+  const writes: Array<{ key: string; id?: string }> = []
+  let pos: Record<string, any> = { toolu_other: { page: 2, mode: 'after' } }
+  stubHost(on)
+  stubState(on, () => ({ views: { toolu_1: VIEW, toolu_other: VIEW }, pos }))
+  on('state.set', (_, e) => { const w = e as any; writes.push({ key: w.key, id: w.id }); if (w.key === 'position') pos = { ...pos, [w.id]: w.value }; return { value: { isSet: true, version: 2 } } })
+  const ui = await $.ui.mount(ROW('terminal'))
+  await ui.press({ key: 'next' })
+  expect(writes.length).toBeGreaterThan(0)
+  expect(writes.every(w => w.key === 'position' && w.id === 'toolu_1')).toBe(true)
+  expect(pos.toolu_other).toEqual({ page: 2, mode: 'after' })
+  await ui.unmount()
 })

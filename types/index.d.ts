@@ -30,7 +30,8 @@ declare module 'claude-code' {
   interface PluginState {
     'show-me': {
       views: Shaped<Record<string, View>>
-      positions: Shaped<Record<string, Position>>
+      /** Where the person is in each viewer, per viewer id. */
+      position: StateFamily<Position>
       screen: Shaped<Screen>
       /** Whether a Read row's picture is unfolded in the terminal, per tool_use_id. */
       open: StateFamily<boolean>
